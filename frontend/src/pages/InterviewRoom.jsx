@@ -137,8 +137,15 @@ const InterviewRoom = () => {
 
   const connectSocket = useCallback(() => {
     if (socketRef.current) socketRef.current.disconnect()
+    const isLocalDev = window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1"
     const sock = io(SOCKET_URL, {
-      auth: { token: jwtToken }, transports: ["websocket"], reconnection: true
+      auth:         { token: jwtToken },
+      transports:   isLocalDev ? ["websocket"] : ["polling", "websocket"],
+      reconnection: true,
+      reconnectionDelay:    3000,
+      reconnectionAttempts: 5,
+      timeout:              20000
     })
     sock.on("connect", () => {
       setConnected(true)
@@ -497,10 +504,10 @@ const InterviewRoom = () => {
             {interview?.role_name || "Interview"}
           </span>
           <span className={"flex items-center gap-1 text-xs px-2 py-0.5 rounded-full " + (
-            connected ? "bg-green-900/50 text-green-400" : "bg-red-900/50 text-red-400"
+            connected ? "bg-green-900/50 text-green-400" : "bg-slate-700/50 text-slate-400"
           )}>
-            <span className={"w-1.5 h-1.5 rounded-full " + (connected ? "bg-green-400 animate-pulse" : "bg-red-400")} />
-            {connected ? "Live" : "Connecting..."}
+            <span className={"w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"} />
+            Live
           </span>
         </div>
         <div className="flex-1 max-w-sm mx-auto">

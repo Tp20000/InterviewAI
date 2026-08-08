@@ -1,8 +1,14 @@
 ﻿import { createContext, useContext, useRef, useState, useEffect } from "react"
 import { io } from "socket.io-client"
-import { SOCKET_URL } from "../services/api"
+import { SOCKET_URL, BACKEND_URL } from "../services/api"
 
 const SocketContext = createContext(null)
+
+// Render free tier works better with polling
+const isLocal = (
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1"
+)
 
 export const SocketProvider = ({ children }) => {
   const socketRef = useRef(null)
@@ -13,22 +19,25 @@ export const SocketProvider = ({ children }) => {
 
     const sock = io(SOCKET_URL, {
       auth:         { token },
-      transports:   ["websocket", "polling"],
+      // Local: use websocket, Production: use polling (more reliable on Render)
+      transports:   isLocal ? ["websocket"] : ["polling", "websocket"],
       reconnection: true,
-      reconnectionDelay: 2000,
-      timeout:      10000
+      reconnectionDelay:    2000,
+      reconnectionAttempts: 5,
+      timeout:              20000
     })
 
-    sock.on("connect",    () => {
-      console.log("[Socket] Connected to", SOCKET_URL)
+    sock.on("connect", () => {
+      console.log("[Socket] Connected via:", sock.io.engine.transport.name)
       setConnected(true)
     })
-    sock.on("disconnect", () => {
-      console.log("[Socket] Disconnected")
+    sock.on("disconnect", (reason) => {
+      console.log("[Socket] Disconnected:", reason)
       setConnected(false)
     })
     sock.on("connect_error", (err) => {
-      console.error("[Socket] Connection error:", err.message)
+      console.warn("[Socket] Error:", err.message)
+      setConnected(false)
     })
 
     socketRef.current = sock

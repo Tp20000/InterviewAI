@@ -84,9 +84,10 @@ const CandidateDashboard = () => {
     const jwt = localStorage.getItem("access_token")
     if (!jwt) return
     try {
-      const sock = io(SOCKET_URL, {
+      const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    const sock = io(SOCKET_URL, {
         auth:         { token: jwt },
-        transports:   ["websocket", "polling"],
+        transports:   isLocal ? ["websocket"] : ["polling", "websocket"],
         reconnection: true
       })
       sock.on("connect", () => {
