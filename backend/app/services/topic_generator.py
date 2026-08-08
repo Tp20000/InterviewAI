@@ -1,6 +1,7 @@
 ﻿import os
 import json
 import requests
+import time
 
 def _load_env():
     env_file = os.path.normpath(
@@ -21,115 +22,135 @@ def _load_env():
 
 _load_env()
 
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-def _call_groq(messages, model="llama-3.1-8b-instant",
-               temperature=0.4, max_tokens=800, timeout=240):
+def _call_groq_raw(messages, model="llama-3.1-8b-instant",
+                   temperature=0.3, max_tokens=600, timeout=60):
     """
-    Direct HTTP call to Groq API using requests.
-    Bypasses the groq package to avoid proxy/timeout issues.
+    Direct HTTP to Groq. Very explicit error handling.
     """
     api_key = os.environ.get("GROQ_API_KEY", "")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY not set")
 
-    headers = {
-        "Authorization": "Bearer " + api_key,
-        "Content-Type":  "application/json"
-    }
-    payload = {
-        "model":       model,
-        "messages":    messages,
-        "temperature": temperature,
-        "max_tokens":  max_tokens
-    }
+    print("[Groq] API key set: " + str(bool(api_key and len(api_key) > 10)))
+    print("[Groq] Model: " + model)
+    print("[Groq] Calling API...")
 
+    if not api_key or len(api_key) < 20:
+        raise ValueError("GROQ_API_KEY not set or too short: '" + api_key[:5] + "'")
+
+    start = time.time()
     try:
         resp = requests.post(
-            GROQ_API_URL,
-            headers=headers,
-            json=payload,
+            GROQ_URL,
+            headers={
+                "Authorization": "Bearer " + api_key,
+                "Content-Type":  "application/json"
+            },
+            json={
+                "model":       model,
+                "messages":    messages,
+                "temperature": temperature,
+                "max_tokens":  max_tokens
+            },
             timeout=timeout
         )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        elapsed = round(time.time() - start, 2)
+        print("[Groq] Response in " + str(elapsed) + "s, status: " + str(resp.status_code))
+
+        if resp.status_code != 200:
+            print("[Groq] Error body: " + resp.text[:300])
+            raise Exception(
+                "Groq HTTP " + str(resp.status_code) + ": " + resp.text[:200]
+            )
+
+        data    = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+        print("[Groq] Got content (" + str(len(content)) + " chars)")
+        return content
+
     except requests.exceptions.Timeout:
-        raise Exception("Groq API timeout after " + str(timeout) + "s")
+        elapsed = round(time.time() - start, 2)
+        print("[Groq] TIMEOUT after " + str(elapsed) + "s")
+        raise Exception("Groq timed out after " + str(elapsed) + "s")
+    except requests.exceptions.ConnectionError as e:
+        print("[Groq] CONNECTION ERROR: " + str(e))
+        raise Exception("Cannot reach Groq API: " + str(e))
     except requests.exceptions.RequestException as e:
-        raise Exception("Groq HTTP error: " + str(e))
-    except (KeyError, IndexError) as e:
-        raise Exception("Groq response parse error: " + str(e))
+        print("[Groq] REQUEST ERROR: " + str(e))
+        raise Exception("Groq request failed: " + str(e))
 
 
 class TopicGenerator:
     def __init__(self):
         self.api_key = os.environ.get("GROQ_API_KEY", "")
         self.model   = "llama-3.1-8b-instant"
-        print("[TopicGenerator] Ready. Model: " + self.model)
+        print("[TopicGenerator] Init. Key set: " + str(bool(self.api_key)))
 
     def generate_topics(self, job_description, role_name,
                         experience_level, total_questions=10):
+        print("[TopicGenerator] Generating for: " + role_name)
+
         prompt = (
             "Role: " + role_name + " | Level: " + experience_level + "\n"
-            "Job Description:\n" + job_description[:1500] + "\n\n"
-            "Generate 5-6 interview topics. Weightages must sum to 100.\n"
-            "Reply with valid JSON only:\n"
+            "JD snippet: " + job_description[:800] + "\n\n"
+            "Create exactly 5 interview topics. Total weightage = 100.\n"
+            "Reply with ONLY this JSON, nothing else:\n"
             '{"topics":[{"topic_name":"Python Basics","weightage":20,'
             '"difficulty":"medium","order_index":1}],'
-            '"summary":"Brief summary"}'
+            '"summary":"Topics for ' + role_name + '"}'
         )
 
         try:
-            print("[TopicGenerator] Calling Groq API...")
-            content = _call_groq(
+            content = _call_groq_raw(
                 messages=[
                     {"role": "system",
-                     "content": "You are a recruiter. Reply with valid JSON only. No extra text."},
+                     "content": "You are a recruiter. Output valid JSON only. No markdown, no explanation."},
                     {"role": "user", "content": prompt}
                 ],
                 model=self.model,
-                temperature=0.3,
-                max_tokens=600,
-                timeout=180
+                temperature=0.2,
+                max_tokens=500,
+                timeout=60
             )
-            print("[TopicGenerator] Got response: " + content[:100])
 
-            # Parse JSON
+            # Try to parse JSON
             start = content.find("{")
             end   = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                data   = json.loads(content[start:end])
-                topics = data.get("topics", [])
+            if start < 0 or end <= start:
+                print("[TopicGenerator] No JSON found in: " + content[:100])
+                raise ValueError("No JSON in response")
 
-                if topics:
-                    # Normalize to 100%
-                    total_w = sum(t.get("weightage", 0) for t in topics)
-                    if total_w > 0 and total_w != 100:
-                        for t in topics:
-                            t["weightage"] = round(
-                                (t["weightage"] / total_w) * 100
-                            )
-                        # Fix rounding
-                        diff = 100 - sum(t.get("weightage", 0) for t in topics)
-                        if diff != 0:
-                            topics[0]["weightage"] += diff
+            data   = json.loads(content[start:end])
+            topics = data.get("topics", [])
 
-                    print("[TopicGenerator] Generated " + str(len(topics)) + " topics")
-                    return {
-                        "topics":  topics,
-                        "summary": data.get("summary", "AI-generated topics"),
-                        "success": True
-                    }
+            if not topics:
+                print("[TopicGenerator] Empty topics list")
+                raise ValueError("Empty topics")
+
+            # Normalize to 100
+            total_w = sum(t.get("weightage", 0) for t in topics)
+            if total_w > 0 and total_w != 100:
+                for t in topics:
+                    t["weightage"] = round((t["weightage"] / total_w) * 100)
+                diff = 100 - sum(t.get("weightage", 0) for t in topics)
+                if diff != 0 and topics:
+                    topics[0]["weightage"] += diff
+
+            print("[TopicGenerator] AI SUCCESS - " + str(len(topics)) + " topics")
+            return {
+                "topics":  topics,
+                "summary": data.get("summary", "Topics for " + role_name),
+                "success": True
+            }
+
         except Exception as e:
-            print("[TopicGenerator] Error: " + str(e))
-
-        # Fallback topics
-        print("[TopicGenerator] Using fallback topics")
-        return self._fallback(role_name, experience_level)
+            print("[TopicGenerator] AI FAILED: " + str(e))
+            print("[TopicGenerator] Using fallback topics")
+            return self._fallback(role_name, experience_level)
 
     def _fallback(self, role_name, experience_level):
+        """Return default topics when AI fails."""
         return {
             "topics": [
                 {"topic_name": "Introduction & Background",

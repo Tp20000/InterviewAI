@@ -232,3 +232,67 @@ def ping():
         "status":    "auth ok",
         "timestamp": datetime.utcnow().isoformat()
     }), 200
+
+# ── TEST GROQ (Debug) ─────────────────────────────────────────
+@auth_bp.route("/test-groq", methods=["GET"])
+def test_groq():
+    """Test Groq API connectivity from the server."""
+    import os
+    import requests as req
+    import time
+
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    result  = {
+        "api_key_set":    bool(api_key and len(api_key) > 20),
+        "api_key_prefix": api_key[:8] + "..." if api_key else "NOT SET",
+        "groq_url":       "https://api.groq.com/openai/v1/chat/completions",
+        "model":          "llama-3.1-8b-instant"
+    }
+
+    if not api_key:
+        result["error"] = "GROQ_API_KEY not set in environment"
+        return jsonify(result), 500
+
+    start = time.time()
+    try:
+        resp = req.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer " + api_key,
+                "Content-Type":  "application/json"
+            },
+            json={
+                "model":       "llama-3.1-8b-instant",
+                "messages":    [{"role": "user", "content": "Say: OK"}],
+                "max_tokens":  5,
+                "temperature": 0
+            },
+            timeout=30
+        )
+        elapsed = round(time.time() - start, 2)
+
+        if resp.status_code == 200:
+            data    = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            result["success"]      = True
+            result["response"]     = content
+            result["elapsed_sec"]  = elapsed
+            result["status_code"]  = 200
+            return jsonify(result), 200
+        else:
+            result["success"]     = False
+            result["status_code"] = resp.status_code
+            result["error"]       = resp.text[:500]
+            result["elapsed_sec"] = elapsed
+            return jsonify(result), 500
+
+    except req.exceptions.Timeout:
+        result["success"] = False
+        result["error"]   = "Timeout after 30s - Groq unreachable from Render"
+        result["elapsed_sec"] = round(time.time() - start, 2)
+        return jsonify(result), 504
+    except Exception as e:
+        result["success"] = False
+        result["error"]   = str(e)
+        result["elapsed_sec"] = round(time.time() - start, 2)
+        return jsonify(result), 500
