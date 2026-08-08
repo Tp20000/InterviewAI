@@ -2,7 +2,8 @@
 import { Link, useNavigate } from "react-router-dom"
 import { useAuth } from "../context/AuthContext"
 import { interviewService } from "../services/interviewService"
-import LoadingSpinner from "../components/common/LoadingSpinner"
+import LoadingSpinner
+import LoadingSkeleton from "../components/common/LoadingSpinner"
 import I from "../components/common/Icon"
 import toast from "react-hot-toast"
 import { io } from "socket.io-client"
@@ -102,8 +103,12 @@ const CandidateDashboard = () => {
   const display = tabs[tab] || []
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-900">
-      <LoadingSpinner size="lg" text="Loading dashboard..." />
+    <div className="min-h-screen bg-slate-900">
+      <div className="max-w-6xl mx-auto px-4 md:px-6 py-8">
+        <div className="h-10 bg-slate-800 rounded-xl w-48 mb-8 animate-pulse" />
+        <LoadingSkeleton type="stat" />
+        <LoadingSkeleton type="card" rows={5} />
+      </div>
     </div>
   )
 

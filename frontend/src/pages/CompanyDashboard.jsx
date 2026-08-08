@@ -2,7 +2,8 @@
 import { Link, useNavigate } from "react-router-dom"
 import { useAuth } from "../context/AuthContext"
 import { interviewService } from "../services/interviewService"
-import LoadingSpinner from "../components/common/LoadingSpinner"
+import LoadingSpinner
+import LoadingSkeleton from "../components/common/LoadingSpinner"
 import I from "../components/common/Icon"
 import toast from "react-hot-toast"
 import { formatDate } from "../utils/helpers"

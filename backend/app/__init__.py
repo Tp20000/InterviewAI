@@ -167,6 +167,13 @@ def create_app():
         db.create_all()
         _seed_all()
 
+        # Warm up Groq on startup (prevents first-call slowness)
+    try:
+        import threading
+        threading.Thread(target=_warmup_groq, daemon=True).start()
+    except Exception:
+        pass
+
     return app
 
 
@@ -218,3 +225,36 @@ def _seed_all():
     except Exception as e:
         db.session.rollback()
         print("[InterviewAI] Seed note: " + str(e))
+
+def _warmup_groq():
+    """Pre-warm Groq connection on startup."""
+    import time
+    import requests as req
+    import os
+    time.sleep(3)  # Wait for app to fully start
+
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        return
+
+    try:
+        resp = req.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer " + api_key,
+                "Content-Type":  "application/json"
+            },
+            json={
+                "model":       "llama-3.1-8b-instant",
+                "messages":    [{"role": "user", "content": "Hi"}],
+                "max_tokens":  3,
+                "temperature": 0
+            },
+            timeout=20
+        )
+        if resp.status_code == 200:
+            print("[InterviewAI] Groq pre-warmed successfully!")
+        else:
+            print("[InterviewAI] Groq warmup status: " + str(resp.status_code))
+    except Exception as e:
+        print("[InterviewAI] Groq warmup note: " + str(e))

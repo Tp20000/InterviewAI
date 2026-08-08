@@ -209,7 +209,8 @@ const InterviewRoom = () => {
     try {
       setIsThinking(true)
       setCurrentQ(null)
-      await new Promise(r => setTimeout(r, 600))
+      // Small delay for UX
+      await new Promise(r => setTimeout(r, 300))
       const res = await interviewService.getNextQuestion(token)
       if (res.data.complete) { await endInterview(); return }
       const q = res.data.question
