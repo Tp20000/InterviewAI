@@ -1,7 +1,6 @@
 ﻿import axios from "axios"
 
 // ── Backend URL ──────────────────────────────────────────────
-// Priority: env var → localhost detection → hardcoded production
 const PROD_URL = "https://interviewai-backend-0vs9.onrender.com"
 const DEV_URL  = "http://localhost:5000"
 
@@ -14,15 +13,12 @@ const isLocal = (
 export const BACKEND_URL = isLocal ? DEV_URL : PROD_URL
 export const SOCKET_URL  = BACKEND_URL
 
-// Log for debugging
-console.log("[API] Hostname:", window.location.hostname)
-console.log("[API] Is local:", isLocal)
-console.log("[API] Backend URL:", BACKEND_URL)
+console.log("[API] Backend:", BACKEND_URL)
 
-// ── Standard API (30s) ───────────────────────────────────────
+// ── Standard API (45s) ───────────────────────────────────────
 const api = axios.create({
   baseURL:         BACKEND_URL + "/api",
-  timeout:         30000,
+  timeout:         45000,
   withCredentials: false,
   headers:         {
     "Content-Type": "application/json",
@@ -30,10 +26,10 @@ const api = axios.create({
   }
 })
 
-// ── AI API (120s for Groq) ───────────────────────────────────
+// ── AI API (180s for Groq calls) ─────────────────────────────
 export const aiApi = axios.create({
   baseURL:         BACKEND_URL + "/api",
-  timeout:         120000,
+  timeout:         180000,
   withCredentials: false,
   headers:         {
     "Content-Type": "application/json",
@@ -53,13 +49,12 @@ function addAuth(config) {
 api.interceptors.request.use(addAuth, e => Promise.reject(e))
 aiApi.interceptors.request.use(addAuth, e => Promise.reject(e))
 
-// ── Response error handler ───────────────────────────────────
+// ── Error handler ────────────────────────────────────────────
 function onError(error) {
   if (!error.response) {
     if (error.code === "ECONNABORTED" || error.message?.includes("timeout")) {
-      const e  = new Error(
-        "Request timed out. AI is warming up, please try again in 30s."
-      )
+      console.warn("[API] Timeout")
+      const e  = new Error("Request timed out. Please try again.")
       e.isTimeout = true
       return Promise.reject(e)
     }

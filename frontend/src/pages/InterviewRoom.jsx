@@ -205,27 +205,55 @@ const InterviewRoom = () => {
     }
   }
 
-  const fetchNextQuestion = async () => {
+  const fetchNextQuestion = async (retryCount = 0) => {
     try {
       setIsThinking(true)
       setCurrentQ(null)
-      // Small delay for UX
       await new Promise(r => setTimeout(r, 300))
+
       const res = await interviewService.getNextQuestion(token)
-      if (res.data.complete) { await endInterview(); return }
+
+      if (res.data.complete) {
+        await endInterview()
+        return
+      }
+
       const q = res.data.question
       setCurrentQ(q)
       setQuestionId(q?.id)
       setQNumber(res.data.question_number || 0)
+
       if (q?.question_text) {
         addMessage("ai", q.question_text)
         setTimeout(() => speakText(q.question_text), 400)
       }
     } catch (err) {
-      toast.error("Failed to get question: " + (err.response?.data?.error || err.message))
-      setTimeout(() => {
-        if (phaseRef.current === PHASE.INTERVIEW) fetchNextQuestion()
-      }, 2000)
+      const isTimeout = err.isTimeout || err.code === "ECONNABORTED"
+      const msg       = err.response?.data?.error || err.message || "Unknown error"
+
+      console.warn("[Interview] Question fetch error:", msg)
+
+      // Retry up to 3 times
+      if (retryCount < 3) {
+        const delay = (retryCount + 1) * 3000 // 3s, 6s, 9s
+        console.log("[Interview] Retrying in " + delay + "ms (attempt " + (retryCount+1) + "/3)")
+        addMessage("ai", retryCount === 0
+          ? "Let me think of the next question..."
+          : "One moment please..."
+        )
+        await new Promise(r => setTimeout(r, delay))
+        if (phaseRef.current === PHASE.INTERVIEW) {
+          await fetchNextQuestion(retryCount + 1)
+        }
+      } else {
+        // After 3 retries, show user-friendly message and retry button
+        toast.error("Having trouble connecting. Please wait and try again.", { duration: 5000 })
+        addMessage("ai",
+          "I apologize for the delay. The AI server is taking longer than expected. " +
+          "Please click 'Retry Question' or wait a moment."
+        )
+        setCurrentQ({ question_text: "RETRY_NEEDED", id: null, question_type: "retry", difficulty: "medium" })
+      }
     } finally {
       setIsThinking(false)
     }
@@ -538,7 +566,7 @@ const InterviewRoom = () => {
           </div>
           <div className="border-t border-slate-700 bg-slate-800/50 p-4 flex-shrink-0">
             {phase === PHASE.INTERVIEW && !pendingEnd ? (
-              currentQ && !isSubmitting ? (
+              currentQ && currentQ.question_type === "retry" ? (
                 <SpeechInput
                   onSubmit={handleSubmitAnswer}
                   disabled={isThinking || isSubmitting || pendingEnd}
