@@ -39,7 +39,7 @@ InterviewAI is a production-grade full-stack web application that completely aut
 |-------|----------|
 | ![Login](docs/screenshots/login.png) | ![Register](docs/screenshots/register1.png) |
 
-| Register - Company Details |
+| Register |
 |---------------------------|
 | ![Register Company](docs/screenshots/register2.png) |
 
