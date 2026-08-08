@@ -14,7 +14,9 @@ socketio = SocketIO()
 
 
 def _load_env():
-    env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    env_file = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", ".env"
+    )
     env_file = os.path.normpath(env_file)
     if not os.path.exists(env_file):
         return
@@ -52,56 +54,50 @@ def create_app():
 
     app = Flask(__name__, instance_relative_config=True)
 
-    # Load config
     from app.config import config_map
     env = os.environ.get("FLASK_ENV", "development")
     app.config.from_object(config_map.get(env, config_map["default"]))
 
-    # Ensure folders exist
     os.makedirs(app.instance_path, exist_ok=True)
     for folder in ["uploads/videos", "uploads/audio", "uploads/recordings"]:
         os.makedirs(folder, exist_ok=True)
 
-    # Init extensions
     db.init_app(app)
     jwt.init_app(app)
 
-    # ── CORS - Handle manually for maximum compatibility ─────
-    # This handles ALL cors including preflight OPTIONS requests
+    # ── CORS: Handle OPTIONS preflight + all responses ────────
     @app.before_request
     def handle_preflight():
         if request.method == "OPTIONS":
-            response = app.make_default_options_response()
-            origin = request.headers.get("Origin", "")
-            response.headers["Access-Control-Allow-Origin"]      = origin
-            response.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization"
-            response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Max-Age"]           = "3600"
-            return response
+            resp = app.make_default_options_response()
+            origin = request.headers.get("Origin", "*")
+            resp.headers["Access-Control-Allow-Origin"]      = origin
+            resp.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization, Accept"
+            resp.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Max-Age"]           = "86400"
+            return resp
 
     @app.after_request
     def add_cors_headers(response):
         origin = request.headers.get("Origin", "")
         if origin:
             response.headers["Access-Control-Allow-Origin"]      = origin
-            response.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization"
-            response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization, Accept"
+            response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
             response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
-    # Also use Flask-CORS as backup
-    CORS(
-        app,
-        origins="*",
-        supports_credentials=True,
-        allow_headers=["Content-Type", "Authorization"],
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    )
+    # Flask-CORS as additional layer
+    CORS(app,
+         origins="*",
+         supports_credentials=True,
+         allow_headers=["Content-Type", "Authorization", "Accept"],
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
 
     # ── SocketIO ─────────────────────────────────────────────
     async_mode = _get_async_mode()
-    print("[SocketIO] Using async mode: " + async_mode)
+    print("[SocketIO] async_mode: " + async_mode)
 
     socketio.init_app(
         app,
@@ -114,7 +110,7 @@ def create_app():
         max_http_buffer_size=10000000
     )
 
-    # ── JWT error handlers ───────────────────────────────────
+    # ── JWT handlers ─────────────────────────────────────────
     @jwt.unauthorized_loader
     def unauthorized_callback(reason):
         return jsonify({"error": "Missing or invalid token"}), 401
@@ -142,13 +138,13 @@ def create_app():
     app.register_blueprint(admin_bp,     url_prefix="/api/admin")
     app.register_blueprint(report_bp,    url_prefix="/api/report")
 
-    # ── Socket handlers ──────────────────────────────────────
+    # ── Sockets ──────────────────────────────────────────────
     try:
         from app.sockets import interview_socket  # noqa
     except Exception as e:
         print("[Warning] Socket handlers not loaded: " + str(e))
 
-    # ── Health ───────────────────────────────────────────────
+    # ── Routes ───────────────────────────────────────────────
     @app.route("/api/health")
     def health():
         return jsonify({
@@ -162,12 +158,13 @@ def create_app():
     @app.route("/")
     def root():
         return jsonify({
-            "name":   "InterviewAI API",
-            "status": "running",
-            "health": "/api/health"
+            "name":    "InterviewAI API",
+            "status":  "running",
+            "health":  "/api/health",
+            "version": "1.0.0"
         }), 200
 
-    # ── Database ─────────────────────────────────────────────
+    # ── Database + Seed ──────────────────────────────────────
     with app.app_context():
         from app.models.user      import User
         from app.models.interview import Company, Interview, InterviewTopic
@@ -177,17 +174,22 @@ def create_app():
         from app.models.cheat_log import CheatLog
         from app.models.report    import Report
         db.create_all()
-        _create_default_admin()
-        _create_demo_accounts()
+        _seed_all_accounts()
 
     return app
 
 
-def _create_default_admin():
-    from app.models.user import User
+def _seed_all_accounts():
+    """Create all demo accounts on every startup (idempotent)."""
+    from app.models.user      import User
+    from app.models.interview import Company
+
+    created = []
+
     try:
-        existing = User.query.filter_by(role="admin").first()
-        if not existing:
+        # ── Admin ────────────────────────────────────────────
+        admin = User.query.filter_by(email="admin@interviewai.com").first()
+        if not admin:
             admin = User(
                 email="admin@interviewai.com",
                 full_name="System Admin",
@@ -195,20 +197,10 @@ def _create_default_admin():
             )
             admin.set_password("admin123")
             db.session.add(admin)
-            db.session.commit()
-            print("[InterviewAI] Admin created: admin@interviewai.com / admin123")
-        else:
-            print("[InterviewAI] Backend ready.")
-    except Exception as e:
-        print("[InterviewAI] Note: " + str(e))
+            db.session.flush()
+            created.append("admin@interviewai.com")
 
-
-def _create_demo_accounts():
-    """Create demo company and candidate accounts."""
-    from app.models.user      import User
-    from app.models.interview import Company
-    try:
-        # Demo company
+        # ── Company ──────────────────────────────────────────
         comp_user = User.query.filter_by(email="company@demo.com").first()
         if not comp_user:
             comp_user = User(
@@ -219,6 +211,7 @@ def _create_demo_accounts():
             comp_user.set_password("demo123")
             db.session.add(comp_user)
             db.session.flush()
+
             comp = Company(
                 user_id=comp_user.id,
                 company_name="TechCorp Demo",
@@ -226,21 +219,39 @@ def _create_demo_accounts():
                 website="https://techcorp.demo"
             )
             db.session.add(comp)
-            print("[InterviewAI] Demo company created: company@demo.com / demo123")
+            created.append("company@demo.com")
+        else:
+            # Ensure company profile exists
+            comp = Company.query.filter_by(user_id=comp_user.id).first()
+            if not comp:
+                comp = Company(
+                    user_id=comp_user.id,
+                    company_name="TechCorp Demo",
+                    industry="Technology",
+                    website="https://techcorp.demo"
+                )
+                db.session.add(comp)
+                created.append("company profile fixed")
 
-        # Demo candidate
-        cand_user = User.query.filter_by(email="candidate@demo.com").first()
-        if not cand_user:
-            cand_user = User(
+        # ── Candidate ────────────────────────────────────────
+        cand = User.query.filter_by(email="candidate@demo.com").first()
+        if not cand:
+            cand = User(
                 email="candidate@demo.com",
                 full_name="Demo Candidate",
                 role="candidate"
             )
-            cand_user.set_password("demo123")
-            db.session.add(cand_user)
-            print("[InterviewAI] Demo candidate created: candidate@demo.com / demo123")
+            cand.set_password("demo123")
+            db.session.add(cand)
+            created.append("candidate@demo.com")
 
         db.session.commit()
+
+        if created:
+            print("[InterviewAI] Created: " + ", ".join(created))
+        else:
+            print("[InterviewAI] All accounts exist. Backend ready.")
+
     except Exception as e:
         db.session.rollback()
-        print("[InterviewAI] Demo accounts note: " + str(e))
+        print("[InterviewAI] Seed error: " + str(e))

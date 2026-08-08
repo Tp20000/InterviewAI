@@ -1,40 +1,35 @@
 ﻿import { createContext, useContext, useRef, useState, useEffect } from "react"
 import { io } from "socket.io-client"
+import { SOCKET_URL } from "../services/api"
 
 const SocketContext = createContext(null)
-
-const SOCKET_URL = "http://localhost:5000"
 
 export const SocketProvider = ({ children }) => {
   const socketRef = useRef(null)
   const [connected, setConnected] = useState(false)
 
-  useEffect(() => {
-    // Connect when token is available
-    const token = localStorage.getItem("access_token")
-    if (token && !socketRef.current) {
-      connect(token)
-    }
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect()
-        socketRef.current = null
-      }
-    }
-  }, [])
-
   const connect = (token) => {
-    if (socketRef.current) return
+    if (socketRef.current?.connected) return socketRef.current
 
     const sock = io(SOCKET_URL, {
-      auth: { token },
-      transports: ["websocket"],
+      auth:         { token },
+      transports:   ["websocket", "polling"],
       reconnection: true,
-      reconnectionDelay: 2000
+      reconnectionDelay: 2000,
+      timeout:      10000
     })
 
-    sock.on("connect",    () => setConnected(true))
-    sock.on("disconnect", () => setConnected(false))
+    sock.on("connect",    () => {
+      console.log("[Socket] Connected to", SOCKET_URL)
+      setConnected(true)
+    })
+    sock.on("disconnect", () => {
+      console.log("[Socket] Disconnected")
+      setConnected(false)
+    })
+    sock.on("connect_error", (err) => {
+      console.error("[Socket] Connection error:", err.message)
+    })
 
     socketRef.current = sock
     return sock
@@ -48,23 +43,11 @@ export const SocketProvider = ({ children }) => {
     }
   }
 
-  const emit = (event, data) => {
-    if (socketRef.current) {
-      socketRef.current.emit(event, data)
+  useEffect(() => {
+    return () => {
+      if (socketRef.current) socketRef.current.disconnect()
     }
-  }
-
-  const on = (event, handler) => {
-    if (socketRef.current) {
-      socketRef.current.on(event, handler)
-    }
-  }
-
-  const off = (event, handler) => {
-    if (socketRef.current) {
-      socketRef.current.off(event, handler)
-    }
-  }
+  }, [])
 
   return (
     <SocketContext.Provider value={{
@@ -72,9 +55,7 @@ export const SocketProvider = ({ children }) => {
       connected,
       connect,
       disconnect,
-      emit,
-      on,
-      off
+      SOCKET_URL
     }}>
       {children}
     </SocketContext.Provider>

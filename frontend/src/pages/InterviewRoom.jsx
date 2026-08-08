@@ -13,7 +13,7 @@ import LoadingSpinner from "../components/common/LoadingSpinner"
 import I from "../components/common/Icon"
 import toast from "react-hot-toast"
 import { io } from "socket.io-client"
-import { SOCKET_URL } from "../services/api"
+import { SOCKET_URL, BACKEND_URL } from "../services/api"
 
 const PHASE = {
   SETUP:     "setup",
@@ -268,7 +268,7 @@ const InterviewRoom = () => {
       setIsThinking(true)
       try {
         const resp = await fetch(
-          `${SOCKET_URL}/api/interview/session/${token}/ai-respond`,
+          `${BACKEND_URL}/api/interview/session/${token}/ai-respond`,
           { method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": "Bearer " + jwtToken },
             body: JSON.stringify({ question: answerText }) }
