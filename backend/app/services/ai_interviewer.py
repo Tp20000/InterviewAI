@@ -1,6 +1,7 @@
 ﻿import os
 import json
 import random
+import requests
 
 def _load_env():
     env_file = os.path.normpath(
@@ -21,104 +22,82 @@ def _load_env():
 
 _load_env()
 
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+FAST_MODEL   = "llama-3.1-8b-instant"
+SCORE_MODEL  = "llama3-8b-8192"
 
-def _create_groq_client():
-    """Create Groq client with extended timeout."""
+
+def _call_groq(messages, model=FAST_MODEL,
+               temperature=0.7, max_tokens=300, timeout=120):
+    """Direct HTTP call to Groq - bypasses groq package issues."""
     api_key = os.environ.get("GROQ_API_KEY", "")
-    if not api_key or len(api_key) < 20:
-        raise ValueError("GROQ_API_KEY not set!")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not set")
 
     try:
-        import httpx
-        from groq import Groq
-        http_client = httpx.Client(
-            timeout=httpx.Timeout(
-                connect=30.0,
-                read=240.0,
-                write=30.0,
-                pool=30.0
-            )
+        resp = requests.post(
+            GROQ_API_URL,
+            headers={
+                "Authorization": "Bearer " + api_key,
+                "Content-Type":  "application/json"
+            },
+            json={
+                "model":       model,
+                "messages":    messages,
+                "temperature": temperature,
+                "max_tokens":  max_tokens
+            },
+            timeout=timeout
         )
-        try:
-            return Groq(api_key=api_key, http_client=http_client)
-        except TypeError:
-            return Groq(api_key=api_key)
-    except ImportError:
-        from groq import Groq
-        return Groq(api_key=api_key)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except requests.exceptions.Timeout:
+        raise Exception("Groq timeout after " + str(timeout) + "s")
     except Exception as e:
-        raise Exception("Groq client error: " + str(e))
-
-
-# Model selection - use fast model for interviewing
-INTERVIEW_MODEL  = "llama-3.1-8b-instant"   # Fast for interviews
-EVALUATE_MODEL   = "llama3-8b-8192"          # Fast for scoring
-FALLBACK_MODEL   = "llama-3.3-70b-versatile" # Accurate but slow
+        raise Exception("Groq error: " + str(e))
 
 
 class AIInterviewer:
     def __init__(self):
-        self.client = _create_groq_client()
-        # Use fast model - 8b is much quicker than 70b
-        self.model  = os.environ.get("GROQ_MODEL", INTERVIEW_MODEL)
-        print("[AIInterviewer] Model: " + self.model)
+        self.api_key = os.environ.get("GROQ_API_KEY", "")
+        if not self.api_key or len(self.api_key) < 20:
+            raise ValueError("GROQ_API_KEY not set!")
+        print("[AIInterviewer] Ready. Model: " + FAST_MODEL)
 
-    def _chat(self, messages, temperature=0.7, max_tokens=512,
-              model=None):
-        use_model = model or self.model
-        try:
-            response = self.client.chat.completions.create(
-                model=use_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            error_str = str(e)
-            print("[AIInterviewer] Error with " + use_model + ": " + error_str[:100])
-            # Try fallback model
-            if use_model != FALLBACK_MODEL:
-                try:
-                    response = self.client.chat.completions.create(
-                        model=FALLBACK_MODEL,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
-                    return response.choices[0].message.content.strip()
-                except Exception as e2:
-                    raise Exception("All models failed: " + str(e2))
-            raise Exception("Groq error: " + error_str)
+    def _chat(self, messages, temperature=0.7, max_tokens=200,
+              model=None, timeout=120):
+        return _call_groq(
+            messages=messages,
+            model=model or FAST_MODEL,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
 
     def generate_greeting(self, candidate_name, role_name, company_name):
-        messages = [
+        return self._chat([
             {"role": "system",
              "content": "You are Alex, a friendly AI interviewer. Be warm and professional."},
             {"role": "user",
              "content": (
-                "Generate interview opening for:\n"
-                "Candidate: " + candidate_name + "\n"
-                "Role: " + role_name + "\n"
-                "Company: " + company_name + "\n\n"
-                "Welcome them, introduce yourself as Alex, ask them to introduce themselves. "
-                "Keep it to 2-3 sentences."
+                "Write a 2-3 sentence interview opening.\n"
+                "Candidate: " + candidate_name + " | Role: " + role_name +
+                " | Company: " + company_name + "\n"
+                "Welcome them by first name, introduce yourself as Alex, "
+                "ask them to introduce themselves."
              )}
-        ]
-        return self._chat(messages, temperature=0.8, max_tokens=150)
+        ], temperature=0.8, max_tokens=150)
 
     def generate_next_question(self, role_name, company_name, topics,
                                 conversation_history, current_topic,
                                 question_number, total_questions,
                                 experience_level, last_answer="",
                                 resume_text="", jd_text=""):
-        topics_str = ", ".join([t.get("topic_name", "") for t in topics[:5]])
-        progress   = (question_number / max(total_questions, 1)) * 100
-
+        progress = (question_number / max(total_questions, 1)) * 100
         phase = (
-            "warmup" if progress < 20 else
-            "core technical" if progress < 70 else
-            "behavioral" if progress < 90 else
+            "warmup (easy)" if progress < 20 else
+            "technical"     if progress < 70 else
+            "behavioral"    if progress < 90 else
             "closing"
         )
 
@@ -128,69 +107,71 @@ class AIInterviewer:
         elif isinstance(current_topic, str):
             ct_name = current_topic
 
-        system_prompt = (
-            "You are Alex, AI interviewer at " + company_name +
-            " for " + role_name + " (" + experience_level + ").\n"
-            "Topic: " + ct_name + " | Phase: " + phase +
-            " | Q" + str(question_number) + "/" + str(total_questions) + "\n"
-            "Ask ONE specific question. Sound human. Max 2 sentences."
-        )
+        messages = [{
+            "role": "system",
+            "content": (
+                "You are Alex, AI interviewer at " + company_name +
+                " for " + role_name + " (" + experience_level + ").\n"
+                "Topic: " + ct_name + " | Phase: " + phase +
+                " | Q" + str(question_number) + "/" + str(total_questions) + "\n"
+                "Ask ONE specific question. Sound human. Max 2 sentences. "
+                "No preamble, just the question."
+            )
+        }]
 
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # Only keep last 6 messages for speed
-        for msg in conversation_history[-6:]:
+        # Last 4 messages for context
+        for msg in conversation_history[-4:]:
             messages.append(msg)
 
-        user_content = "Ask the next interview question."
+        user_msg = "Ask the next question."
         if last_answer:
-            user_content = "Candidate said: " + last_answer[:300] + "\n\nAsk the next question."
-        if resume_text and question_number <= 3:
-            user_content += "\nResume: " + resume_text[:500]
+            user_msg = (
+                "Candidate just answered: " + last_answer[:200] +
+                "\n\nAsk the next relevant question."
+            )
+        messages.append({"role": "user", "content": user_msg})
 
-        messages.append({"role": "user", "content": user_content})
-        return self._chat(messages, temperature=0.7, max_tokens=150)
+        return self._chat(messages, temperature=0.7, max_tokens=120)
 
     def generate_closing(self, candidate_name, role_name):
-        messages = [
+        return self._chat([
             {"role": "system", "content": "You are Alex, AI interviewer."},
             {"role": "user",   "content": (
                 "2-sentence closing for " + candidate_name +
-                " who just finished interviewing for " + role_name +
+                " finishing interview for " + role_name +
                 ". Thank them, say results will be shared soon."
             )}
-        ]
-        return self._chat(messages, temperature=0.7, max_tokens=100)
+        ], temperature=0.7, max_tokens=100)
 
     def evaluate_answer(self, question, answer, topic,
                         role_name, experience_level):
-        if not answer or len(answer.strip()) < 10:
+        if not answer or len(answer.strip()) < 5:
             return {
                 "technical_score": 0, "relevance_score": 0,
                 "clarity_score":   0, "depth_score":     0,
                 "overall_score":   0,
-                "feedback":        "No meaningful answer provided.",
+                "feedback":        "No answer provided.",
                 "is_ai_generated": False
             }
 
-        prompt = (
-            "Score this interview answer.\n"
-            "Role: " + role_name + " | Topic: " + topic + "\n"
-            "Q: " + question[:200] + "\n"
-            "A: " + answer[:400] + "\n\n"
-            "JSON only:\n"
-            '{"technical_score":7,"relevance_score":7,'
-            '"clarity_score":7,"depth_score":7,'
-            '"feedback":"2 sentence feedback","is_ai_generated":false}'
-        )
         try:
-            result = self._chat(
-                [{"role": "system", "content": "Evaluator. JSON only."},
-                 {"role": "user",   "content": prompt}],
-                temperature=0.2,
-                max_tokens=200,
-                model=EVALUATE_MODEL
-            )
+            result = self._chat([
+                {"role": "system",
+                 "content": "Score interview answers. Reply JSON only."},
+                {"role": "user",
+                 "content": (
+                    "Role: " + role_name + " | Topic: " + topic + "\n"
+                    "Q: " + question[:150] + "\n"
+                    "A: " + answer[:300] + "\n\n"
+                    "Score 0-10 each:\n"
+                    '{"technical_score":7,"relevance_score":7,'
+                    '"clarity_score":7,"depth_score":6,'
+                    '"feedback":"2 sentence feedback.",'
+                    '"is_ai_generated":false}'
+                 )}
+            ], temperature=0.2, max_tokens=180,
+               model=SCORE_MODEL, timeout=90)
+
             start = result.find("{")
             end   = result.rfind("}") + 1
             if start >= 0 and end > start:
@@ -218,15 +199,15 @@ class AIInterviewer:
         opts = {
             "good":    ["Great answer!", "Excellent!", "Very insightful!"],
             "average": ["I see, thank you.", "Good.", "Alright."],
-            "poor":    ["Thank you.", "I see.", "Noted."]
+            "poor":    ["Thank you.", "Noted.", "I see."]
         }
         return random.choice(opts.get(quality, opts["average"]))
 
 
-_ai_interviewer = None
+_instance = None
 
 def get_ai_interviewer():
-    global _ai_interviewer
-    if _ai_interviewer is None:
-        _ai_interviewer = AIInterviewer()
-    return _ai_interviewer
+    global _instance
+    if _instance is None:
+        _instance = AIInterviewer()
+    return _instance

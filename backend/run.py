@@ -16,28 +16,31 @@ if os.path.exists(env_path):
             k, v = line.split("=", 1)
             os.environ[k.strip()] = v.strip()
 
-# ── Async mode detection ─────────────────────────────────────
-# Try eventlet first (best for local), fall back to gevent,
-# then threading (works everywhere)
-ASYNC_MODE = "threading"  # safe default
+# Detect if running under gunicorn (production)
+is_gunicorn = "gunicorn" in os.environ.get("SERVER_SOFTWARE", "") or \
+              any("gunicorn" in arg for arg in sys.argv)
 
-try:
-    import eventlet
-    eventlet.monkey_patch()
-    ASYNC_MODE = "eventlet"
-    print("[InterviewAI] Using eventlet async mode")
-except Exception as e:
-    print("[InterviewAI] eventlet not available: " + str(e))
+if not is_gunicorn:
+    # Local dev - use eventlet
     try:
-        import gevent.monkey
-        gevent.monkey.patch_all()
-        ASYNC_MODE = "gevent"
-        print("[InterviewAI] Using gevent async mode")
-    except Exception as e2:
-        print("[InterviewAI] gevent not available: " + str(e2))
-        print("[InterviewAI] Using threading async mode")
-
-os.environ["SOCKETIO_ASYNC_MODE"] = ASYNC_MODE
+        import eventlet
+        eventlet.monkey_patch()
+        os.environ["SOCKETIO_ASYNC_MODE"] = "eventlet"
+        print("[InterviewAI] Using eventlet (local dev)")
+    except Exception:
+        try:
+            import gevent.monkey
+            gevent.monkey.patch_all()
+            os.environ["SOCKETIO_ASYNC_MODE"] = "gevent"
+            print("[InterviewAI] Using gevent (local dev)")
+        except Exception:
+            os.environ["SOCKETIO_ASYNC_MODE"] = "threading"
+            print("[InterviewAI] Using threading (local dev)")
+else:
+    # Production (Render) - use threading
+    # This avoids eventlet worker conflicts with gunicorn
+    os.environ["SOCKETIO_ASYNC_MODE"] = "threading"
+    print("[InterviewAI] Using threading (production)")
 
 from app import create_app, socketio
 
@@ -51,9 +54,8 @@ if __name__ == "__main__":
     print("  InterviewAI Backend")
     print("  URL    : http://0.0.0.0:" + str(port))
     print("  Health : http://0.0.0.0:" + str(port) + "/api/health")
-    print("  Mode   : " + ("Development" if debug else "Production"))
-    print("  Async  : " + ASYNC_MODE)
-    print("  Press Ctrl+C to stop")
+    print("  Mode   : " + ("Dev" if debug else "Production"))
+    print("  Async  : " + os.environ.get("SOCKETIO_ASYNC_MODE", "threading"))
     print("=" * 52)
 
     try:
@@ -66,5 +68,5 @@ if __name__ == "__main__":
             log_output=False
         )
     except KeyboardInterrupt:
-        print("\nBackend stopped.")
+        print("\nStopped.")
         sys.exit(0)

@@ -1,5 +1,6 @@
 ﻿import os
 import json
+import requests
 from datetime import datetime
 from app import db
 from app.models.report    import Report
@@ -10,42 +11,33 @@ from app.models.interview import Interview
 from app.models.cheat_log import CheatLog
 from app.models.user      import User
 
-
-def _load_env():
-    env_file = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
-    )
-    if not os.path.exists(env_file):
-        return
-    with open(env_file, "rb") as f:
-        raw = f.read()
-    content = raw.decode("ascii", errors="ignore").replace("\r", "")
-    for line in content.split("\n"):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            k, v = k.strip(), v.strip()
-            if k not in os.environ:
-                os.environ[k] = v
-
-_load_env()
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-def _create_groq_client():
+def _call_groq(messages, model="llama-3.1-8b-instant",
+               temperature=0.4, max_tokens=600, timeout=120):
     api_key = os.environ.get("GROQ_API_KEY", "")
-    if not api_key or len(api_key) < 20:
+    if not api_key:
         return None
     try:
-        from groq import Groq
-        try:
-            return Groq(api_key=api_key)
-        except TypeError as e:
-            if "proxies" in str(e):
-                import httpx
-                return Groq(api_key=api_key, http_client=httpx.Client())
-            raise e
+        resp = requests.post(
+            GROQ_API_URL,
+            headers={
+                "Authorization": "Bearer " + api_key,
+                "Content-Type":  "application/json"
+            },
+            json={
+                "model":       model,
+                "messages":    messages,
+                "temperature": temperature,
+                "max_tokens":  max_tokens
+            },
+            timeout=timeout
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print("[ReportGenerator] Groq client error: " + str(e))
+        print("[ReportGenerator] Groq error: " + str(e))
         return None
 
 
@@ -63,16 +55,15 @@ class ReportGenerator:
 
             qa_pairs = []
             for ans in answers:
-                question = Question.query.get(ans.question_id)
-                if question:
+                q = Question.query.get(ans.question_id)
+                if q:
                     qa_pairs.append({
-                        "question": question.question_text,
-                        "answer":   ans.answer_text[:300],
-                        "score":    ans.ai_score,
-                        "feedback": ans.ai_feedback
+                        "question": q.question_text[:100],
+                        "answer":   ans.answer_text[:150],
+                        "score":    ans.ai_score
                     })
 
-            analysis = self._generate_ai_analysis(
+            analysis = self._analyze(
                 candidate_name=candidate.full_name if candidate else "Candidate",
                 role_name=interview.role_name,
                 experience_level=interview.experience_level,
@@ -81,7 +72,7 @@ class ReportGenerator:
                 cheat_count=len(cheat_logs)
             )
 
-            recommendation = self._get_recommendation(
+            recommendation = self._recommend(
                 score=session.total_score or 0,
                 cheat_count=len(cheat_logs),
                 is_disqualified=session.status == "disqualified"
@@ -116,68 +107,57 @@ class ReportGenerator:
             db.session.rollback()
             return None, str(e)
 
-    def _generate_ai_analysis(self, candidate_name, role_name,
-                               experience_level, qa_pairs,
-                               total_score, cheat_count):
-        try:
-            client = _create_groq_client()
-            if not client:
-                return self._fallback_analysis(total_score)
-
-            model   = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-            qa_text = ""
-            for i, qa in enumerate(qa_pairs[:8], 1):
-                qa_text += (
-                    "\nQ" + str(i) + ": " + qa["question"] +
-                    "\nA: " + qa["answer"][:200] +
-                    "\nScore: " + str(qa["score"]) + "/10\n"
-                )
-
-            prompt = (
-                "Analyze this interview for " + candidate_name +
-                " applying for " + role_name + " (" + experience_level + ").\n"
-                "Overall Score: " + str(total_score) + "/100\n"
-                "Cheat Events: " + str(cheat_count) + "\n\n"
-                "Interview Q&A:\n" + qa_text + "\n\n"
-                "Provide analysis in JSON:\n"
-                '{"summary":"<3 sentence overall summary>",'
-                '"strengths":["<s1>","<s2>","<s3>"],'
-                '"weaknesses":["<w1>","<w2>"],'
-                '"detailed_analysis":"<5-6 sentence detailed analysis>"}'
+    def _analyze(self, candidate_name, role_name, experience_level,
+                 qa_pairs, total_score, cheat_count):
+        qa_text = ""
+        for i, qa in enumerate(qa_pairs[:5], 1):
+            qa_text += (
+                "Q" + str(i) + ": " + qa["question"] +
+                "\nA: " + qa["answer"] +
+                "\nScore: " + str(qa["score"]) + "/10\n\n"
             )
 
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "Expert evaluator. Reply JSON only."},
-                    {"role": "user",   "content": prompt}
-                ],
-                temperature=0.4,
-                max_tokens=800
-            )
-            content = response.choices[0].message.content.strip()
-            start   = content.find("{")
-            end     = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                return json.loads(content[start:end])
+        prompt = (
+            "Analyze interview for " + candidate_name +
+            " applying for " + role_name + ".\n"
+            "Score: " + str(round(total_score, 1)) + "/100 | "
+            "Cheating: " + str(cheat_count) + " events\n\n"
+            "Q&A:\n" + qa_text +
+            "JSON only:\n"
+            '{"summary":"3 sentence summary",'
+            '"strengths":["strength1","strength2","strength3"],'
+            '"weaknesses":["weakness1","weakness2"],'
+            '"detailed_analysis":"4 sentence analysis"}'
+        )
 
-        except Exception as e:
-            print("[ReportGenerator] AI error: " + str(e))
+        content = _call_groq([
+            {"role": "system", "content": "Interview evaluator. JSON only."},
+            {"role": "user",   "content": prompt}
+        ], max_tokens=500, timeout=120)
 
-        return self._fallback_analysis(total_score)
+        if content:
+            try:
+                start = content.find("{")
+                end   = content.rfind("}") + 1
+                if start >= 0 and end > start:
+                    return json.loads(content[start:end])
+            except Exception:
+                pass
 
-    def _fallback_analysis(self, score):
+        return self._fallback(total_score)
+
+    def _fallback(self, score):
         if score >= 80:
             return {
-                "summary":   "Strong technical knowledge and communication skills demonstrated.",
+                "summary":   "Strong performance demonstrated across all areas.",
                 "strengths": ["Good technical knowledge", "Clear communication", "Relevant experience"],
                 "weaknesses": ["Could provide more specific examples"],
                 "detailed_analysis": "The candidate performed well across all evaluated dimensions."
             }
         elif score >= 60:
             return {
-                "summary":   "Adequate knowledge with room for improvement in technical depth.",
-                "strengths": ["Basic knowledge demonstrated", "Good communication"],
+                "summary":   "Adequate performance with room for improvement.",
+                "strengths": ["Basic knowledge demonstrated", "Good attitude"],
                 "weaknesses": ["Needs deeper technical knowledge", "More examples needed"],
                 "detailed_analysis": "Average performance with some gaps in technical depth."
             }
@@ -185,11 +165,11 @@ class ReportGenerator:
             return {
                 "summary":   "Needs significant improvement for this role.",
                 "strengths": ["Showed willingness to learn"],
-                "weaknesses": ["Insufficient technical knowledge", "Lacks experience"],
+                "weaknesses": ["Insufficient technical knowledge", "Lacks relevant experience"],
                 "detailed_analysis": "Did not meet the minimum requirements for this position."
             }
 
-    def _get_recommendation(self, score, cheat_count, is_disqualified):
+    def _recommend(self, score, cheat_count, is_disqualified):
         if is_disqualified:             return "not_recommend"
         if score >= 80 and cheat_count == 0: return "strongly_recommend"
         if score >= 65:                 return "recommend"
@@ -197,10 +177,10 @@ class ReportGenerator:
         return "not_recommend"
 
 
-_report_generator = None
+_instance = None
 
 def get_report_generator():
-    global _report_generator
-    if _report_generator is None:
-        _report_generator = ReportGenerator()
-    return _report_generator
+    global _instance
+    if _instance is None:
+        _instance = ReportGenerator()
+    return _instance

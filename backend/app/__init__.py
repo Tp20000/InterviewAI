@@ -33,19 +33,12 @@ def _load_env():
 
 
 def _get_async_mode():
+    """Get async mode - prefer threading in production."""
+    # Check if explicitly set
     mode = os.environ.get("SOCKETIO_ASYNC_MODE", "")
     if mode in ["eventlet", "gevent", "threading"]:
         return mode
-    try:
-        import eventlet
-        return "eventlet"
-    except Exception:
-        pass
-    try:
-        import gevent
-        return "gevent"
-    except Exception:
-        pass
+    # Default to threading (safest for production)
     return "threading"
 
 
@@ -65,7 +58,7 @@ def create_app():
     db.init_app(app)
     jwt.init_app(app)
 
-    # ── CORS: Handle OPTIONS preflight + all responses ────────
+    # ── CORS ─────────────────────────────────────────────────
     @app.before_request
     def handle_preflight():
         if request.method == "OPTIONS":
@@ -88,7 +81,6 @@ def create_app():
             response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
-    # Flask-CORS as additional layer
     CORS(app,
          origins="*",
          supports_credentials=True,
@@ -142,7 +134,7 @@ def create_app():
     try:
         from app.sockets import interview_socket  # noqa
     except Exception as e:
-        print("[Warning] Socket handlers not loaded: " + str(e))
+        print("[Warning] Sockets not loaded: " + str(e))
 
     # ── Routes ───────────────────────────────────────────────
     @app.route("/api/health")
@@ -160,11 +152,10 @@ def create_app():
         return jsonify({
             "name":    "InterviewAI API",
             "status":  "running",
-            "health":  "/api/health",
-            "version": "1.0.0"
+            "health":  "/api/health"
         }), 200
 
-    # ── Database + Seed ──────────────────────────────────────
+    # ── Database ─────────────────────────────────────────────
     with app.app_context():
         from app.models.user      import User
         from app.models.interview import Company, Interview, InterviewTopic
@@ -174,84 +165,56 @@ def create_app():
         from app.models.cheat_log import CheatLog
         from app.models.report    import Report
         db.create_all()
-        _seed_all_accounts()
+        _seed_all()
 
     return app
 
 
-def _seed_all_accounts():
-    """Create all demo accounts on every startup (idempotent)."""
+def _seed_all():
     from app.models.user      import User
     from app.models.interview import Company
-
     created = []
-
     try:
-        # ── Admin ────────────────────────────────────────────
-        admin = User.query.filter_by(email="admin@interviewai.com").first()
-        if not admin:
-            admin = User(
-                email="admin@interviewai.com",
-                full_name="System Admin",
-                role="admin"
-            )
-            admin.set_password("admin123")
-            db.session.add(admin)
+        # Admin
+        if not User.query.filter_by(email="admin@interviewai.com").first():
+            u = User(email="admin@interviewai.com",
+                     full_name="System Admin", role="admin")
+            u.set_password("admin123")
+            db.session.add(u)
             db.session.flush()
-            created.append("admin@interviewai.com")
+            created.append("admin")
 
-        # ── Company ──────────────────────────────────────────
+        # Demo company
         comp_user = User.query.filter_by(email="company@demo.com").first()
         if not comp_user:
-            comp_user = User(
-                email="company@demo.com",
-                full_name="Demo Company",
-                role="company"
-            )
+            comp_user = User(email="company@demo.com",
+                             full_name="Demo Company", role="company")
             comp_user.set_password("demo123")
             db.session.add(comp_user)
             db.session.flush()
 
-            comp = Company(
+        if not Company.query.filter_by(user_id=comp_user.id).first():
+            db.session.add(Company(
                 user_id=comp_user.id,
                 company_name="TechCorp Demo",
                 industry="Technology",
                 website="https://techcorp.demo"
-            )
-            db.session.add(comp)
-            created.append("company@demo.com")
-        else:
-            # Ensure company profile exists
-            comp = Company.query.filter_by(user_id=comp_user.id).first()
-            if not comp:
-                comp = Company(
-                    user_id=comp_user.id,
-                    company_name="TechCorp Demo",
-                    industry="Technology",
-                    website="https://techcorp.demo"
-                )
-                db.session.add(comp)
-                created.append("company profile fixed")
+            ))
+            created.append("company profile")
 
-        # ── Candidate ────────────────────────────────────────
-        cand = User.query.filter_by(email="candidate@demo.com").first()
-        if not cand:
-            cand = User(
-                email="candidate@demo.com",
-                full_name="Demo Candidate",
-                role="candidate"
-            )
-            cand.set_password("demo123")
-            db.session.add(cand)
-            created.append("candidate@demo.com")
+        # Demo candidate
+        if not User.query.filter_by(email="candidate@demo.com").first():
+            u = User(email="candidate@demo.com",
+                     full_name="Demo Candidate", role="candidate")
+            u.set_password("demo123")
+            db.session.add(u)
+            created.append("candidate")
 
         db.session.commit()
-
         if created:
             print("[InterviewAI] Created: " + ", ".join(created))
         else:
-            print("[InterviewAI] All accounts exist. Backend ready.")
-
+            print("[InterviewAI] Ready.")
     except Exception as e:
         db.session.rollback()
-        print("[InterviewAI] Seed error: " + str(e))
+        print("[InterviewAI] Seed note: " + str(e))
