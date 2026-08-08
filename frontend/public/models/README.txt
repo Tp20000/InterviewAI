@@ -1,0 +1,1 @@
+﻿Run download_models.ps1 from the project root to download face-api.js model files here.

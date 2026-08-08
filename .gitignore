@@ -1,0 +1,37 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+env/
+.env
+*.egg-info/
+.pytest_cache/
+
+# Database - DO NOT commit (has user data)
+backend/instance/*.db
+
+# Uploads - user files
+backend/uploads/videos/
+backend/uploads/audio/
+backend/uploads/recordings/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Frontend env files (may have secrets)
+frontend/.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

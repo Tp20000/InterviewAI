@@ -1,0 +1,1 @@
+﻿# Models package - explicit imports for convenience
