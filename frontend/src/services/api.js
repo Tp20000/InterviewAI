@@ -1,82 +1,90 @@
 ﻿import axios from "axios"
 
-// ── Backend URL Detection ────────────────────────────────────
-function getBackendUrl() {
-  const envUrl = import.meta.env.VITE_API_URL
-  if (envUrl && envUrl.length > 5) {
-    return envUrl.replace(/\/$/, "")
-  }
-  if (window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1") {
-    return "http://localhost:5000"
-  }
-  // Hardcoded production fallback
-  return "https://interviewai-backend-0vs9.onrender.com"
-}
+// ── Backend URL ──────────────────────────────────────────────
+// Priority: env var → localhost detection → hardcoded production
+const PROD_URL = "https://interviewai-backend-0vs9.onrender.com"
+const DEV_URL  = "http://localhost:5000"
 
-export const BACKEND_URL = getBackendUrl()
+const isLocal = (
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1" ||
+  window.location.hostname === "0.0.0.0"
+)
+
+export const BACKEND_URL = isLocal ? DEV_URL : PROD_URL
 export const SOCKET_URL  = BACKEND_URL
 
-console.log("[API] Backend:", BACKEND_URL)
+// Log for debugging
+console.log("[API] Hostname:", window.location.hostname)
+console.log("[API] Is local:", isLocal)
+console.log("[API] Backend URL:", BACKEND_URL)
 
-// ── Default API (30s timeout) ────────────────────────────────
+// ── Standard API (30s) ───────────────────────────────────────
 const api = axios.create({
   baseURL:         BACKEND_URL + "/api",
   timeout:         30000,
-  headers:         { "Content-Type": "application/json" },
-  withCredentials: false
+  withCredentials: false,
+  headers:         {
+    "Content-Type": "application/json",
+    "Accept":       "application/json"
+  }
 })
 
-// ── AI API (120s timeout for Groq calls) ─────────────────────
+// ── AI API (120s for Groq) ───────────────────────────────────
 export const aiApi = axios.create({
   baseURL:         BACKEND_URL + "/api",
-  timeout:         120000,   // 2 minutes for AI
-  headers:         { "Content-Type": "application/json" },
-  withCredentials: false
+  timeout:         120000,
+  withCredentials: false,
+  headers:         {
+    "Content-Type": "application/json",
+    "Accept":       "application/json"
+  }
 })
 
-// ── Add JWT to both instances ────────────────────────────────
-function addAuthHeader(config) {
+// ── Auth interceptor ─────────────────────────────────────────
+function addAuth(config) {
   const token = localStorage.getItem("access_token")
-  if (token) config.headers.Authorization = "Bearer " + token
+  if (token) {
+    config.headers["Authorization"] = "Bearer " + token
+  }
   return config
 }
 
-api.interceptors.request.use(addAuthHeader, e => Promise.reject(e))
-aiApi.interceptors.request.use(addAuthHeader, e => Promise.reject(e))
+api.interceptors.request.use(addAuth, e => Promise.reject(e))
+aiApi.interceptors.request.use(addAuth, e => Promise.reject(e))
 
-// ── Error handler factory ────────────────────────────────────
-function makeErrorHandler(instanceName) {
-  return (error) => {
-    if (!error.response) {
-      if (error.code === "ECONNABORTED" || error.message?.includes("timeout")) {
-        console.error("[" + instanceName + "] Request timed out")
-        const timeoutErr = new Error(
-          "Request timed out. The AI is warming up, please try again in 30 seconds."
-        )
-        timeoutErr.isTimeout = true
-        return Promise.reject(timeoutErr)
-      }
-      console.error("[" + instanceName + "] Network error")
-      const networkErr = new Error("Cannot connect to server.")
-      networkErr.isNetworkError = true
-      return Promise.reject(networkErr)
+// ── Response error handler ───────────────────────────────────
+function onError(error) {
+  if (!error.response) {
+    if (error.code === "ECONNABORTED" || error.message?.includes("timeout")) {
+      const e  = new Error(
+        "Request timed out. AI is warming up, please try again in 30s."
+      )
+      e.isTimeout = true
+      return Promise.reject(e)
     }
-
-    if (error.response?.status === 401) {
-      const path = window.location.pathname
-      if (!path.includes("/login") && !path.includes("/register")) {
-        localStorage.removeItem("access_token")
-        localStorage.removeItem("user")
-        window.location.href = "/login"
-      }
-    }
-
-    return Promise.reject(error)
+    console.error("[API] Network error. Backend:", BACKEND_URL)
+    const e = new Error("Cannot connect to server.")
+    e.isNetworkError = true
+    return Promise.reject(e)
   }
+
+  const { status, data } = error.response
+  console.error("[API] HTTP", status, data)
+
+  if (status === 401) {
+    const path = window.location.pathname
+    if (!path.includes("/login") && !path.includes("/register")) {
+      localStorage.removeItem("access_token")
+      localStorage.removeItem("user")
+      window.location.href = "/login"
+    }
+  }
+
+  return Promise.reject(error)
 }
 
-api.interceptors.response.use(r => r, makeErrorHandler("API"))
-aiApi.interceptors.response.use(r => r, makeErrorHandler("AI-API"))
+api.interceptors.response.use(r => r, onError)
+aiApi.interceptors.response.use(r => r, onError)
 
 export default api
