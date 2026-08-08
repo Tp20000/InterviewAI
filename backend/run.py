@@ -16,8 +16,28 @@ if os.path.exists(env_path):
             k, v = line.split("=", 1)
             os.environ[k.strip()] = v.strip()
 
-import eventlet
-eventlet.monkey_patch()
+# ── Async mode detection ─────────────────────────────────────
+# Try eventlet first (best for local), fall back to gevent,
+# then threading (works everywhere)
+ASYNC_MODE = "threading"  # safe default
+
+try:
+    import eventlet
+    eventlet.monkey_patch()
+    ASYNC_MODE = "eventlet"
+    print("[InterviewAI] Using eventlet async mode")
+except Exception as e:
+    print("[InterviewAI] eventlet not available: " + str(e))
+    try:
+        import gevent.monkey
+        gevent.monkey.patch_all()
+        ASYNC_MODE = "gevent"
+        print("[InterviewAI] Using gevent async mode")
+    except Exception as e2:
+        print("[InterviewAI] gevent not available: " + str(e2))
+        print("[InterviewAI] Using threading async mode")
+
+os.environ["SOCKETIO_ASYNC_MODE"] = ASYNC_MODE
 
 from app import create_app, socketio
 
@@ -32,6 +52,7 @@ if __name__ == "__main__":
     print("  URL    : http://0.0.0.0:" + str(port))
     print("  Health : http://0.0.0.0:" + str(port) + "/api/health")
     print("  Mode   : " + ("Development" if debug else "Production"))
+    print("  Async  : " + ASYNC_MODE)
     print("  Press Ctrl+C to stop")
     print("=" * 52)
 

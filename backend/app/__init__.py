@@ -30,13 +30,29 @@ def _load_env():
                 os.environ[k] = v
 
 
+def _get_async_mode():
+    """Detect which async mode is available."""
+    # Check if already set by run.py
+    mode = os.environ.get("SOCKETIO_ASYNC_MODE", "")
+    if mode in ["eventlet", "gevent", "threading"]:
+        return mode
+
+    # Auto-detect
+    try:
+        import eventlet
+        return "eventlet"
+    except Exception:
+        pass
+    try:
+        import gevent
+        return "gevent"
+    except Exception:
+        pass
+    return "threading"
+
+
 def _get_cors_origins():
-    """
-    Get CORS origins from environment.
-    Supports multiple origins separated by comma.
-    In production: CORS_ORIGINS=https://your-app.vercel.app
-    In dev: CORS_ORIGINS=http://localhost:5173
-    """
+    """Get CORS origins from environment."""
     origins_env = os.environ.get(
         "CORS_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173"
@@ -66,7 +82,7 @@ def create_app():
     db.init_app(app)
     jwt.init_app(app)
 
-    # ── CORS - single handler, no duplicate ──────────────────
+    # ── CORS ─────────────────────────────────────────────────
     cors_origins = _get_cors_origins()
     CORS(
         app,
@@ -76,11 +92,14 @@ def create_app():
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )
 
-    # ── SocketIO ─────────────────────────────────────────────
+    # ── SocketIO with dynamic async mode ─────────────────────
+    async_mode = _get_async_mode()
+    print("[SocketIO] Using async mode: " + async_mode)
+
     socketio.init_app(
         app,
         cors_allowed_origins=cors_origins,
-        async_mode="eventlet",
+        async_mode=async_mode,
         logger=False,
         engineio_logger=False,
         ping_timeout=60,
@@ -126,18 +145,19 @@ def create_app():
     @app.route("/api/health")
     def health():
         return jsonify({
-            "status":  "ok",
-            "message": "InterviewAI Backend Running",
-            "version": "1.0.0",
-            "env":     os.environ.get("FLASK_ENV", "development")
+            "status":     "ok",
+            "message":    "InterviewAI Backend Running",
+            "version":    "1.0.0",
+            "env":        os.environ.get("FLASK_ENV", "development"),
+            "async_mode": async_mode
         }), 200
 
     @app.route("/")
     def root():
         return jsonify({
-            "name":    "InterviewAI API",
-            "status":  "running",
-            "health":  "/api/health"
+            "name":   "InterviewAI API",
+            "status": "running",
+            "health": "/api/health"
         }), 200
 
     # ── Database ─────────────────────────────────────────────

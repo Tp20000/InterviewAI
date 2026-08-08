@@ -10,6 +10,8 @@ scikit-learn==1.5.1
 apscheduler==3.10.4
 SpeechRecognition==3.10.4
 eventlet==0.36.1
+gevent==24.2.1
+gevent-websocket==0.10.1
 Pillow==10.4.0
 numpy==1.26.4
 python-engineio==4.9.1
