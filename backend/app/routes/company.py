@@ -236,21 +236,48 @@ def generate_topics(interview_id):
         if not interview or interview.company_id != company.id:
             return jsonify({"error": "Not found or forbidden"}), 403
 
-        from app.services.topic_generator import get_topic_generator
-        gen    = get_topic_generator()
-        result = gen.generate_topics(
-            job_description=interview.job_description,
-            role_name=interview.role_name,
-            experience_level=interview.experience_level,
-            total_questions=interview.total_questions
-        )
+        topics_data = None
+        error_msg   = None
+
+        # Try AI generation
+        try:
+            from app.services.topic_generator import get_topic_generator
+            gen        = get_topic_generator()
+            topics_data = gen.generate_topics(
+                job_description=interview.job_description,
+                role_name=interview.role_name,
+                experience_level=interview.experience_level,
+                total_questions=interview.total_questions
+            )
+        except Exception as e:
+            error_msg  = str(e)
+            print("[Topics] AI failed: " + error_msg + " - using fallback")
+            # Use fallback topics
+            topics_data = {
+                "topics": [
+                    {"topic_name": "Introduction & Background",
+                     "weightage": 15, "difficulty": "easy",   "order_index": 1},
+                    {"topic_name": "Technical Fundamentals",
+                     "weightage": 25, "difficulty": "medium", "order_index": 2},
+                    {"topic_name": "Problem Solving",
+                     "weightage": 20, "difficulty": "medium", "order_index": 3},
+                    {"topic_name": "Past Experience & Projects",
+                     "weightage": 20, "difficulty": "medium", "order_index": 4},
+                    {"topic_name": "Behavioral & Soft Skills",
+                     "weightage": 10, "difficulty": "easy",   "order_index": 5},
+                    {"topic_name": "Role-Specific Knowledge",
+                     "weightage": 10, "difficulty": "hard",   "order_index": 6},
+                ],
+                "summary": "Standard topics for " + interview.role_name,
+                "success": False
+            }
 
         # Delete old topics
         InterviewTopic.query.filter_by(interview_id=interview_id).delete()
 
         # Save new topics
         saved = []
-        for t in result["topics"]:
+        for t in topics_data["topics"]:
             topic = InterviewTopic(
                 interview_id=interview_id,
                 topic_name=t.get("topic_name", "General"),
@@ -266,14 +293,15 @@ def generate_topics(interview_id):
         db.session.commit()
 
         return jsonify({
-            "message": "Topics generated",
+            "message": "Topics generated" + (" (AI)" if topics_data.get("success") else " (default)"),
             "topics":  [t.to_dict() for t in saved],
-            "summary": result.get("summary", "")
+            "summary": topics_data.get("summary", ""),
+            "ai_generated": topics_data.get("success", False)
         }), 200
+
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
-
 
 # ── UPDATE TOPICS ────────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/topics", methods=["PUT"])
