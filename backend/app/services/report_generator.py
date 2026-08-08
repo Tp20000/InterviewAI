@@ -2,10 +2,10 @@
 import json
 from datetime import datetime
 from app import db
-from app.models.report   import Report
-from app.models.session  import InterviewSession
-from app.models.answer   import Answer
-from app.models.question import Question
+from app.models.report    import Report
+from app.models.session   import InterviewSession
+from app.models.answer    import Answer
+from app.models.question  import Question
 from app.models.interview import Interview
 from app.models.cheat_log import CheatLog
 from app.models.user      import User
@@ -31,27 +31,36 @@ def _load_env():
 _load_env()
 
 
-class ReportGenerator:
-    """
-    Generates comprehensive interview reports using AI analysis.
-    """
-
-    def generate_report(self, session_id):
-        """
-        Generate a full interview report for a session.
-        Returns Report object.
-        """
+def _create_groq_client():
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key or len(api_key) < 20:
+        return None
+    try:
+        from groq import Groq
         try:
-            session   = InterviewSession.query.get(session_id)
-            interview = Interview.query.get(session.interview_id)
-            candidate = User.query.get(session.candidate_id)
-            answers   = Answer.query.filter_by(session_id=session_id).all()
+            return Groq(api_key=api_key)
+        except TypeError as e:
+            if "proxies" in str(e):
+                import httpx
+                return Groq(api_key=api_key, http_client=httpx.Client())
+            raise e
+    except Exception as e:
+        print("[ReportGenerator] Groq client error: " + str(e))
+        return None
+
+
+class ReportGenerator:
+    def generate_report(self, session_id):
+        try:
+            session    = InterviewSession.query.get(session_id)
+            interview  = Interview.query.get(session.interview_id)
+            candidate  = User.query.get(session.candidate_id)
+            answers    = Answer.query.filter_by(session_id=session_id).all()
             cheat_logs = CheatLog.query.filter_by(session_id=session_id).all()
 
             if not session or not interview:
                 return None, "Session or interview not found"
 
-            # Build Q&A summary
             qa_pairs = []
             for ans in answers:
                 question = Question.query.get(ans.question_id)
@@ -63,7 +72,6 @@ class ReportGenerator:
                         "feedback": ans.ai_feedback
                     })
 
-            # Generate AI analysis
             analysis = self._generate_ai_analysis(
                 candidate_name=candidate.full_name if candidate else "Candidate",
                 role_name=interview.role_name,
@@ -73,26 +81,23 @@ class ReportGenerator:
                 cheat_count=len(cheat_logs)
             )
 
-            # Determine recommendation
             recommendation = self._get_recommendation(
                 score=session.total_score or 0,
                 cheat_count=len(cheat_logs),
                 is_disqualified=session.status == "disqualified"
             )
 
-            # Check for existing report
             existing = Report.query.filter_by(session_id=session_id).first()
             if existing:
-                existing.summary          = analysis.get("summary", "")
-                existing.strengths        = json.dumps(analysis.get("strengths", []))
-                existing.weaknesses       = json.dumps(analysis.get("weaknesses", []))
-                existing.recommendation   = recommendation
+                existing.summary           = analysis.get("summary", "")
+                existing.strengths         = json.dumps(analysis.get("strengths", []))
+                existing.weaknesses        = json.dumps(analysis.get("weaknesses", []))
+                existing.recommendation    = recommendation
                 existing.detailed_analysis = analysis.get("detailed_analysis", "")
-                existing.generated_at     = datetime.utcnow()
+                existing.generated_at      = datetime.utcnow()
                 db.session.commit()
                 return existing, None
 
-            # Create new report
             report = Report(
                 interview_id=interview.id,
                 session_id=session_id,
@@ -111,45 +116,45 @@ class ReportGenerator:
             db.session.rollback()
             return None, str(e)
 
-    def _generate_ai_analysis(self, candidate_name, role_name, experience_level,
-                               qa_pairs, total_score, cheat_count):
-        """Use Groq AI to generate detailed analysis."""
+    def _generate_ai_analysis(self, candidate_name, role_name,
+                               experience_level, qa_pairs,
+                               total_score, cheat_count):
         try:
-            from groq import Groq
-            api_key = os.environ.get("GROQ_API_KEY", "")
-            model   = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-
-            if not api_key or len(api_key) < 20:
+            client = _create_groq_client()
+            if not client:
                 return self._fallback_analysis(total_score)
 
-            client = Groq(api_key=api_key)
-
+            model   = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
             qa_text = ""
             for i, qa in enumerate(qa_pairs[:8], 1):
-                qa_text += f"\nQ{i}: {qa['question']}\nA: {qa['answer'][:200]}\nScore: {qa['score']}/10\n"
+                qa_text += (
+                    "\nQ" + str(i) + ": " + qa["question"] +
+                    "\nA: " + qa["answer"][:200] +
+                    "\nScore: " + str(qa["score"]) + "/10\n"
+                )
 
             prompt = (
-                f"Analyze this interview for {candidate_name} applying for {role_name} ({experience_level}).\n"
-                f"Overall Score: {total_score}/100\n"
-                f"Cheat Events: {cheat_count}\n\n"
-                f"Interview Q&A:\n{qa_text}\n\n"
-                f"Provide analysis in JSON:\n"
-                f'{{"summary":"<3 sentence overall summary>",'
-                f'"strengths":["<strength 1>","<strength 2>","<strength 3>"],'
-                f'"weaknesses":["<weakness 1>","<weakness 2>"],'
-                f'"detailed_analysis":"<5-6 sentence detailed analysis of performance>"}}'
+                "Analyze this interview for " + candidate_name +
+                " applying for " + role_name + " (" + experience_level + ").\n"
+                "Overall Score: " + str(total_score) + "/100\n"
+                "Cheat Events: " + str(cheat_count) + "\n\n"
+                "Interview Q&A:\n" + qa_text + "\n\n"
+                "Provide analysis in JSON:\n"
+                '{"summary":"<3 sentence overall summary>",'
+                '"strengths":["<s1>","<s2>","<s3>"],'
+                '"weaknesses":["<w1>","<w2>"],'
+                '"detailed_analysis":"<5-6 sentence detailed analysis>"}'
             )
 
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "Expert interview evaluator. Reply with valid JSON only."},
+                    {"role": "system", "content": "Expert evaluator. Reply JSON only."},
                     {"role": "user",   "content": prompt}
                 ],
                 temperature=0.4,
                 max_tokens=800
             )
-
             content = response.choices[0].message.content.strip()
             start   = content.find("{")
             end     = content.rfind("}") + 1
@@ -157,48 +162,41 @@ class ReportGenerator:
                 return json.loads(content[start:end])
 
         except Exception as e:
-            print(f"AI analysis error: {e}")
+            print("[ReportGenerator] AI error: " + str(e))
 
         return self._fallback_analysis(total_score)
 
     def _fallback_analysis(self, score):
-        """Fallback analysis when AI is unavailable."""
         if score >= 80:
             return {
-                "summary": "The candidate demonstrated strong technical knowledge and communication skills throughout the interview.",
+                "summary":   "Strong technical knowledge and communication skills demonstrated.",
                 "strengths": ["Good technical knowledge", "Clear communication", "Relevant experience"],
                 "weaknesses": ["Could provide more specific examples"],
                 "detailed_analysis": "The candidate performed well across all evaluated dimensions."
             }
         elif score >= 60:
             return {
-                "summary": "The candidate showed adequate knowledge with room for improvement in technical depth.",
+                "summary":   "Adequate knowledge with room for improvement in technical depth.",
                 "strengths": ["Basic knowledge demonstrated", "Good communication"],
-                "weaknesses": ["Needs deeper technical knowledge", "More real-world examples needed"],
-                "detailed_analysis": "The candidate showed average performance with some gaps in technical depth."
+                "weaknesses": ["Needs deeper technical knowledge", "More examples needed"],
+                "detailed_analysis": "Average performance with some gaps in technical depth."
             }
         else:
             return {
-                "summary": "The candidate needs significant improvement in technical skills for this role.",
+                "summary":   "Needs significant improvement for this role.",
                 "strengths": ["Showed willingness to learn"],
-                "weaknesses": ["Insufficient technical knowledge", "Lacks relevant experience", "Needs improvement in communication"],
-                "detailed_analysis": "The candidate did not meet the minimum requirements for this position."
+                "weaknesses": ["Insufficient technical knowledge", "Lacks experience"],
+                "detailed_analysis": "Did not meet the minimum requirements for this position."
             }
 
     def _get_recommendation(self, score, cheat_count, is_disqualified):
-        """Determine hiring recommendation."""
-        if is_disqualified:
-            return "not_recommend"
-        if score >= 80 and cheat_count == 0:
-            return "strongly_recommend"
-        if score >= 65:
-            return "recommend"
-        if score >= 50:
-            return "neutral"
+        if is_disqualified:             return "not_recommend"
+        if score >= 80 and cheat_count == 0: return "strongly_recommend"
+        if score >= 65:                 return "recommend"
+        if score >= 50:                 return "neutral"
         return "not_recommend"
 
 
-# Singleton
 _report_generator = None
 
 def get_report_generator():
