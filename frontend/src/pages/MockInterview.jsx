@@ -1,4 +1,4 @@
-import { useState } from "react"
+﻿import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { interviewService } from "../services/interviewService"
 import LoadingSpinner from "../components/common/LoadingSpinner"
@@ -58,13 +58,23 @@ const MockInterview = () => {
     try {
       setLoading(true)
       const res = await interviewService.startMock({
-        role_name: finalRole,
+        role_name:        finalRole,
         experience_level: level
       })
-      toast.success("Mock interview created! Get ready...")
-      setTimeout(() => navigate("/interview/" + res.data.session_token), 1000)
+
+      const sessToken = res.data.session_token
+      if (!sessToken) {
+        toast.error("Failed to create session. Please try again.")
+        return
+      }
+
+      toast.success("Mock interview ready! Starting...")
+      // Small delay then navigate
+      await new Promise(r => setTimeout(r, 500))
+      navigate("/interview/" + sessToken)
     } catch (e) {
-      toast.error(e.response?.data?.error || "Failed to start")
+      const msg = e.response?.data?.error || e.message || "Failed to start"
+      toast.error(msg)
     } finally {
       setLoading(false)
     }

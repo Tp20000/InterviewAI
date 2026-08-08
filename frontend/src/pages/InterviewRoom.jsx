@@ -115,21 +115,55 @@ const InterviewRoom = () => {
   const loadSession = async () => {
     try {
       setLoading(true)
+      setError("")
+
+      // Validate token format first
+      if (!token || token.length < 10) {
+        setError("Invalid session link. Please go back to dashboard and click the interview again.")
+        return
+      }
+
       const res = await interviewService.getSession(token)
-      setSession(res.data.session)
-      setInterview(res.data.interview)
-      setTotalQ(res.data.interview?.total_questions || 10)
-      if (res.data.session?.status === "completed") {
-        navigate("/results/" + res.data.session.id, { replace: true })
+      const sess = res.data.session
+      const iv   = res.data.interview
+
+      if (!sess) {
+        setError("Session not found. Please go back to dashboard.")
         return
       }
-      if (res.data.session?.status === "disqualified") {
-        setError("Disqualified: " + (res.data.session.disqualification_reason || "Multiple violations"))
+
+      setSession(sess)
+      setInterview(iv)
+      setTotalQ(iv?.total_questions || 10)
+
+      // Handle different session states
+      if (sess.status === "completed") {
+        navigate("/results/" + sess.id, { replace: true })
         return
       }
+      if (sess.status === "disqualified") {
+        setError("This session was disqualified: " + (sess.disqualification_reason || "Multiple violations detected"))
+        return
+      }
+      if (sess.status === "terminated") {
+        setError("This session was terminated.")
+        return
+      }
+
       setPhase(PHASE.READY)
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to load session.")
+      const status = err.response?.status
+      const msg    = err.response?.data?.error || err.message || "Failed to load session"
+
+      if (status === 404) {
+        setError("Session not found. This link may be expired. Please go back to dashboard and start a new interview.")
+      } else if (status === 403) {
+        setError("Access denied. Please make sure you are logged in with the correct account.")
+      } else if (err.isNetworkError) {
+        setError("Cannot connect to server. Please check your internet connection and try again.")
+      } else {
+        setError(msg)
+      }
     } finally {
       setLoading(false)
     }

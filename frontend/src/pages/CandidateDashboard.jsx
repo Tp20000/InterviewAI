@@ -285,7 +285,13 @@ const CandidateDashboard = () => {
                   <div className="flex-shrink-0">
                     {iv.status === "scheduled" && (
                       <button
-                        onClick={() => navigate("/interview/" + iv.session_token)}
+                        onClick={() => {
+                          if (!iv.session_token) {
+                            toast.error("Invalid session. Please refresh the page.")
+                            return
+                          }
+                          navigate("/interview/" + iv.session_token)
+                        }}
                         className="btn-primary text-sm py-2 px-4">
                         Start
                       </button>

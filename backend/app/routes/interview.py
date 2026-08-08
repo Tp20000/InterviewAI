@@ -61,18 +61,31 @@ def get_session(token):
     try:
         user_id  = int(get_jwt_identity())
         user     = User.query.get(user_id)
+
+        if not token or len(token) < 10:
+            return jsonify({"error": "Invalid session token format"}), 400
+
         session  = InterviewSession.query.filter_by(
             session_token=token
         ).first()
+
         if not session:
-            return jsonify({"error": "Not found"}), 404
+            return jsonify({
+                "error": "Session not found. The link may be expired or invalid. Please go back to dashboard and start again."
+            }), 404
+
         if user.role == "candidate" and session.candidate_id != user_id:
-            return jsonify({"error": "Forbidden"}), 403
+            return jsonify({
+                "error": "This interview session belongs to a different account. Please login with the correct account."
+            }), 403
 
         interview = Interview.query.get(session.interview_id)
+        if not interview:
+            return jsonify({"error": "Interview not found"}), 404
+
         return jsonify({
             "session":   session.to_dict(),
-            "interview": interview.to_dict() if interview else {}
+            "interview": interview.to_dict()
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
