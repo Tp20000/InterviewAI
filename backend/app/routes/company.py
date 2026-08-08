@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+﻿from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 from app import db
@@ -10,14 +10,19 @@ company_bp = Blueprint("company", __name__)
 
 
 def get_company_for_user(user_id):
-    """Get or create company profile for a company user."""
+    """
+    Get company profile for user.
+    Auto-creates it if missing (handles production DB resets).
+    """
     user = User.query.get(user_id)
-    if not user or user.role != "company":
-        return None, None, "Company access required", 403
+    if not user:
+        return None, None, "User not found", 404
+    if user.role != "company":
+        return None, None, "Company access required. Your role is: " + user.role, 403
 
     company = Company.query.filter_by(user_id=user_id).first()
     if not company:
-        # Auto-create company profile if missing
+        # Auto-create company profile
         company = Company(
             user_id=user_id,
             company_name=user.full_name + " Company",
@@ -25,12 +30,17 @@ def get_company_for_user(user_id):
             website=""
         )
         db.session.add(company)
-        db.session.commit()
+        try:
+            db.session.commit()
+            print("[Company] Auto-created profile for user: " + user.email)
+        except Exception as e:
+            db.session.rollback()
+            return None, None, "Failed to create company profile: " + str(e), 500
 
     return user, company, None, None
 
 
-# --- DASHBOARD ---
+# ── DASHBOARD ────────────────────────────────────────────────
 @company_bp.route("/dashboard", methods=["GET"])
 @jwt_required()
 def dashboard():
@@ -44,9 +54,9 @@ def dashboard():
         total_sessions = 0
         completed      = 0
         for iv in interviews:
-            sessions = InterviewSession.query.filter_by(interview_id=iv.id).all()
+            sessions        = InterviewSession.query.filter_by(interview_id=iv.id).all()
             total_sessions += len(sessions)
-            completed += len([s for s in sessions if s.status == "completed"])
+            completed      += len([s for s in sessions if s.status == "completed"])
 
         return jsonify({
             "company": company.to_dict(),
@@ -62,7 +72,7 @@ def dashboard():
         return jsonify({"error": str(e)}), 500
 
 
-# --- LIST INTERVIEWS ---
+# ── LIST INTERVIEWS ──────────────────────────────────────────
 @company_bp.route("/interviews", methods=["GET"])
 @jwt_required()
 def list_interviews():
@@ -78,8 +88,8 @@ def list_interviews():
 
         result = []
         for iv in interviews:
-            d = iv.to_dict()
-            sessions = InterviewSession.query.filter_by(interview_id=iv.id).all()
+            d          = iv.to_dict()
+            sessions   = InterviewSession.query.filter_by(interview_id=iv.id).all()
             d["candidate_count"] = len(sessions)
             d["completed_count"] = len([s for s in sessions if s.status == "completed"])
             result.append(d)
@@ -89,7 +99,7 @@ def list_interviews():
         return jsonify({"error": str(e)}), 500
 
 
-# --- CREATE INTERVIEW ---
+# ── CREATE INTERVIEW ─────────────────────────────────────────
 @company_bp.route("/interviews", methods=["POST"])
 @jwt_required()
 def create_interview():
@@ -106,7 +116,7 @@ def create_interview():
         required = ["title", "job_description", "role_name"]
         missing  = [f for f in required if not data.get(f)]
         if missing:
-            return jsonify({"error": "Missing: " + str(missing)}), 400
+            return jsonify({"error": "Missing fields: " + str(missing)}), 400
 
         interview = Interview(
             company_id=company.id,
@@ -131,7 +141,7 @@ def create_interview():
         return jsonify({"error": str(e)}), 500
 
 
-# --- GET SINGLE INTERVIEW ---
+# ── GET SINGLE INTERVIEW ─────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>", methods=["GET"])
 @jwt_required()
 def get_interview(interview_id):
@@ -143,7 +153,6 @@ def get_interview(interview_id):
         if not interview:
             return jsonify({"error": "Interview not found"}), 404
 
-        # Allow admin to view any, company can view their own
         if user.role == "company":
             company = Company.query.filter_by(user_id=user_id).first()
             if not company or interview.company_id != company.id:
@@ -154,12 +163,12 @@ def get_interview(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- UPDATE INTERVIEW ---
+# ── UPDATE INTERVIEW ─────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>", methods=["PUT"])
 @jwt_required()
 def update_interview(interview_id):
     try:
-        user_id   = int(get_jwt_identity())
+        user_id  = int(get_jwt_identity())
         user, company, err, code = get_company_for_user(user_id)
         if err:
             return jsonify({"error": err}), code
@@ -187,7 +196,7 @@ def update_interview(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- DELETE INTERVIEW ---
+# ── DELETE INTERVIEW ─────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>", methods=["DELETE"])
 @jwt_required()
 def delete_interview(interview_id):
@@ -213,7 +222,7 @@ def delete_interview(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- GENERATE TOPICS FROM JD ---
+# ── GENERATE TOPICS ──────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/generate-topics", methods=["POST"])
 @jwt_required()
 def generate_topics(interview_id):
@@ -257,7 +266,7 @@ def generate_topics(interview_id):
         db.session.commit()
 
         return jsonify({
-            "message": "Topics generated successfully",
+            "message": "Topics generated",
             "topics":  [t.to_dict() for t in saved],
             "summary": result.get("summary", "")
         }), 200
@@ -266,7 +275,7 @@ def generate_topics(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- UPDATE TOPICS ---
+# ── UPDATE TOPICS ────────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/topics", methods=["PUT"])
 @jwt_required()
 def update_topics(interview_id):
@@ -286,10 +295,14 @@ def update_topics(interview_id):
         for t_data in topics:
             topic = InterviewTopic.query.get(t_data.get("id"))
             if topic and topic.interview_id == interview_id:
-                if t_data.get("topic_name"):  topic.topic_name = t_data["topic_name"]
-                if t_data.get("weightage") is not None: topic.weightage = int(t_data["weightage"])
-                if t_data.get("difficulty"):  topic.difficulty = t_data["difficulty"]
-                if "is_approved" in t_data:   topic.is_approved = t_data["is_approved"]
+                if t_data.get("topic_name"):
+                    topic.topic_name = t_data["topic_name"]
+                if t_data.get("weightage") is not None:
+                    topic.weightage = int(t_data["weightage"])
+                if t_data.get("difficulty"):
+                    topic.difficulty = t_data["difficulty"]
+                if "is_approved" in t_data:
+                    topic.is_approved = t_data["is_approved"]
 
         db.session.commit()
         updated = InterviewTopic.query.filter_by(interview_id=interview_id).all()
@@ -299,7 +312,7 @@ def update_topics(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- APPROVE INTERVIEW ---
+# ── APPROVE INTERVIEW ────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/approve", methods=["POST"])
 @jwt_required()
 def approve_interview(interview_id):
@@ -325,7 +338,7 @@ def approve_interview(interview_id):
         db.session.commit()
 
         return jsonify({
-            "message":   "Interview approved and activated",
+            "message":   "Interview activated",
             "interview": interview.to_dict()
         }), 200
     except Exception as e:
@@ -333,7 +346,7 @@ def approve_interview(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- INVITE CANDIDATE ---
+# ── INVITE CANDIDATE ─────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/invite", methods=["POST"])
 @jwt_required()
 def invite_candidate(interview_id):
@@ -358,7 +371,6 @@ def invite_candidate(interview_id):
         if not candidate:
             return jsonify({"error": "No candidate found with email: " + email}), 404
 
-        # Check if already invited
         existing = InterviewSession.query.filter_by(
             interview_id=interview_id,
             candidate_id=candidate.id
@@ -377,30 +389,14 @@ def invite_candidate(interview_id):
         db.session.add(session)
         db.session.commit()
 
-        # Notify via socket
+        # Notify candidate
         try:
             from app import socketio
-            socketio.emit("interview_update", {
-                "type": "candidate_invited",
-                "data": {
-                    "candidate_name":  candidate.full_name,
-                    "candidate_email": candidate.email,
-                    "session_token":   session.session_token,
-                    "status":          "scheduled"
-                },
-                "interview_id": interview_id
-            }, room="interview_" + str(interview_id))
-        except Exception:
-            pass
-
-        # Notify candidate in real-time
-        try:
-            from app import socketio as sio
-            sio.emit("new_invitation", {
-                "interview_title":  interview.title,
-                "role_name":        interview.role_name,
-                "session_token":    session.session_token,
-                "company_name":     company.company_name
+            socketio.emit("new_invitation", {
+                "interview_title": interview.title,
+                "role_name":       interview.role_name,
+                "session_token":   session.session_token,
+                "company_name":    company.company_name
             }, room="user_" + str(candidate.id))
         except Exception:
             pass
@@ -415,7 +411,7 @@ def invite_candidate(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- GET CANDIDATES ---
+# ── GET CANDIDATES ───────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/candidates", methods=["GET"])
 @jwt_required()
 def get_candidates(interview_id):
@@ -449,7 +445,7 @@ def get_candidates(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- GET RANKINGS ---
+# ── GET RANKINGS ─────────────────────────────────────────────
 @company_bp.route("/interviews/<int:interview_id>/rankings", methods=["GET"])
 @jwt_required()
 def get_rankings(interview_id):
@@ -462,7 +458,7 @@ def get_rankings(interview_id):
         return jsonify({"error": str(e)}), 500
 
 
-# --- UPDATE COMPANY PROFILE ---
+# ── UPDATE COMPANY PROFILE ───────────────────────────────────
 @company_bp.route("/profile", methods=["PUT"])
 @jwt_required()
 def update_profile():
@@ -478,7 +474,32 @@ def update_profile():
         if data.get("website"):      company.website      = data["website"]
 
         db.session.commit()
-        return jsonify({"message": "Profile updated", "company": company.to_dict()}), 200
+        return jsonify({"message": "Updated", "company": company.to_dict()}), 200
     except Exception as e:
         db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+# ── DEBUG ENDPOINT (remove in production) ───────────────────
+@company_bp.route("/debug/me", methods=["GET"])
+@jwt_required()
+def debug_me():
+    """Debug endpoint to check user + company status."""
+    try:
+        user_id = int(get_jwt_identity())
+        user    = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found", "user_id": user_id}), 404
+
+        company = Company.query.filter_by(user_id=user_id).first()
+        return jsonify({
+            "user_id":      user_id,
+            "email":        user.email,
+            "role":         user.role,
+            "is_active":    user.is_active,
+            "has_company":  company is not None,
+            "company_id":   company.id if company else None,
+            "company_name": company.company_name if company else None
+        }), 200
+    except Exception as e:
         return jsonify({"error": str(e)}), 500

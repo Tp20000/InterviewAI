@@ -1,5 +1,7 @@
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+﻿from flask import Blueprint, request, jsonify
+from flask_jwt_extended import (
+    create_access_token, jwt_required, get_jwt_identity
+)
 from datetime import datetime
 from app import db
 from app.models.user      import User
@@ -9,7 +11,37 @@ from app.utils.validators import validate_email, validate_password, validate_rol
 auth_bp = Blueprint("auth", __name__)
 
 
-# --- REGISTER ---
+def _ensure_company_profile(user):
+    """Ensure company user has a company profile. Create if missing."""
+    if user.role != "company":
+        return None
+    company = Company.query.filter_by(user_id=user.id).first()
+    if not company:
+        company = Company(
+            user_id=user.id,
+            company_name=user.full_name + " Company",
+            industry="Technology",
+            website=""
+        )
+        db.session.add(company)
+        db.session.commit()
+        print("[Auth] Auto-created company profile for: " + user.email)
+    return company
+
+
+def _build_user_response(user):
+    """Build user dict with company info if applicable."""
+    data = user.to_dict()
+    if user.role == "company":
+        company = _ensure_company_profile(user)
+        if company:
+            data["company_id"]   = company.id
+            data["company_name"] = company.company_name
+            data["industry"]     = company.industry
+    return data
+
+
+# ── REGISTER ─────────────────────────────────────────────────
 @auth_bp.route("/register", methods=["POST"])
 def register():
     try:
@@ -35,7 +67,7 @@ def register():
             return jsonify({"error": pw_msg}), 400
 
         if not validate_role(role):
-            return jsonify({"error": "Role must be admin, company, or candidate"}), 400
+            return jsonify({"error": "Role must be: company or candidate"}), 400
 
         if User.query.filter_by(email=email).first():
             return jsonify({"error": "Email already registered"}), 409
@@ -49,7 +81,6 @@ def register():
             company_name = data.get("company_name", name + " Company").strip()
             industry     = data.get("industry", "Technology").strip()
             website      = data.get("website", "").strip()
-
             company = Company(
                 user_id=user.id,
                 company_name=company_name,
@@ -60,14 +91,8 @@ def register():
 
         db.session.commit()
 
-        token = create_access_token(identity=str(user.id))
-        user_data = user.to_dict()
-
-        if role == "company":
-            company = Company.query.filter_by(user_id=user.id).first()
-            if company:
-                user_data["company_id"]   = company.id
-                user_data["company_name"] = company.company_name
+        token     = create_access_token(identity=str(user.id))
+        user_data = _build_user_response(user)
 
         return jsonify({
             "message":      "Registration successful",
@@ -80,7 +105,7 @@ def register():
         return jsonify({"error": str(e)}), 500
 
 
-# --- LOGIN ---
+# ── LOGIN ─────────────────────────────────────────────────────
 @auth_bp.route("/login", methods=["POST"])
 def login():
     try:
@@ -100,27 +125,12 @@ def login():
         if not user.is_active:
             return jsonify({"error": "Account deactivated. Contact admin."}), 403
 
-        # Auto-fix: create company profile if missing
+        # Ensure company profile exists
         if user.role == "company":
-            company = Company.query.filter_by(user_id=user.id).first()
-            if not company:
-                company = Company(
-                    user_id=user.id,
-                    company_name=user.full_name + " Company",
-                    industry="Technology",
-                    website=""
-                )
-                db.session.add(company)
-                db.session.commit()
+            _ensure_company_profile(user)
 
         token     = create_access_token(identity=str(user.id))
-        user_data = user.to_dict()
-
-        if user.role == "company":
-            company = Company.query.filter_by(user_id=user.id).first()
-            if company:
-                user_data["company_id"]   = company.id
-                user_data["company_name"] = company.company_name
+        user_data = _build_user_response(user)
 
         return jsonify({
             "message":      "Login successful",
@@ -132,7 +142,7 @@ def login():
         return jsonify({"error": str(e)}), 500
 
 
-# --- GET CURRENT USER ---
+# ── GET CURRENT USER ─────────────────────────────────────────
 @auth_bp.route("/me", methods=["GET"])
 @jwt_required()
 def me():
@@ -142,34 +152,23 @@ def me():
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        user_data = user.to_dict()
         if user.role == "company":
-            company = Company.query.filter_by(user_id=user_id).first()
-            if not company:
-                company = Company(
-                    user_id=user_id,
-                    company_name=user.full_name + " Company",
-                    industry="Technology",
-                    website=""
-                )
-                db.session.add(company)
-                db.session.commit()
-            user_data["company_id"]   = company.id
-            user_data["company_name"] = company.company_name
+            _ensure_company_profile(user)
 
+        user_data = _build_user_response(user)
         return jsonify({"user": user_data}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# --- LOGOUT ---
+# ── LOGOUT ───────────────────────────────────────────────────
 @auth_bp.route("/logout", methods=["POST"])
 @jwt_required()
 def logout():
     return jsonify({"message": "Logged out successfully"}), 200
 
 
-# --- CHANGE PASSWORD ---
+# ── CHANGE PASSWORD ──────────────────────────────────────────
 @auth_bp.route("/change-password", methods=["PUT"])
 @jwt_required()
 def change_password():
@@ -198,7 +197,7 @@ def change_password():
         return jsonify({"error": str(e)}), 500
 
 
-# --- UPLOAD RESUME ---
+# ── UPLOAD RESUME ─────────────────────────────────────────────
 @auth_bp.route("/upload-resume", methods=["POST"])
 @jwt_required()
 def upload_resume():
@@ -212,15 +211,10 @@ def upload_resume():
         resume_text = data.get("resume_text", "").strip()
 
         if not resume_text or len(resume_text) < 30:
-            return jsonify({"error": "Resume text too short"}), 400
+            return jsonify({"error": "Resume text too short (min 30 chars)"}), 400
 
-        # Check if resume_text column exists
-        try:
-            user.resume_text = resume_text[:10000]
-            db.session.commit()
-        except Exception:
-            # Column might not exist yet - that is OK
-            db.session.rollback()
+        user.resume_text = resume_text[:10000]
+        db.session.commit()
 
         return jsonify({
             "message":       "Resume uploaded successfully",
@@ -231,7 +225,10 @@ def upload_resume():
         return jsonify({"error": str(e)}), 500
 
 
-# --- HEALTH ---
+# ── PING ─────────────────────────────────────────────────────
 @auth_bp.route("/ping", methods=["GET"])
 def ping():
-    return jsonify({"status": "auth ok", "timestamp": datetime.utcnow().isoformat()}), 200
+    return jsonify({
+        "status":    "auth ok",
+        "timestamp": datetime.utcnow().isoformat()
+    }), 200
