@@ -2,7 +2,7 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
@@ -31,13 +31,9 @@ def _load_env():
 
 
 def _get_async_mode():
-    """Detect which async mode is available."""
-    # Check if already set by run.py
     mode = os.environ.get("SOCKETIO_ASYNC_MODE", "")
     if mode in ["eventlet", "gevent", "threading"]:
         return mode
-
-    # Auto-detect
     try:
         import eventlet
         return "eventlet"
@@ -49,17 +45,6 @@ def _get_async_mode():
     except Exception:
         pass
     return "threading"
-
-
-def _get_cors_origins():
-    """Get CORS origins from environment."""
-    origins_env = os.environ.get(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173"
-    )
-    origins = [o.strip() for o in origins_env.split(",") if o.strip()]
-    print("[CORS] Allowed origins: " + str(origins))
-    return origins
 
 
 def create_app():
@@ -74,31 +59,53 @@ def create_app():
 
     # Ensure folders exist
     os.makedirs(app.instance_path, exist_ok=True)
-    os.makedirs("uploads/videos",     exist_ok=True)
-    os.makedirs("uploads/audio",      exist_ok=True)
-    os.makedirs("uploads/recordings", exist_ok=True)
+    for folder in ["uploads/videos", "uploads/audio", "uploads/recordings"]:
+        os.makedirs(folder, exist_ok=True)
 
     # Init extensions
     db.init_app(app)
     jwt.init_app(app)
 
-    # ── CORS ─────────────────────────────────────────────────
-    cors_origins = _get_cors_origins()
+    # ── CORS - Handle manually for maximum compatibility ─────
+    # This handles ALL cors including preflight OPTIONS requests
+    @app.before_request
+    def handle_preflight():
+        if request.method == "OPTIONS":
+            response = app.make_default_options_response()
+            origin = request.headers.get("Origin", "")
+            response.headers["Access-Control-Allow-Origin"]      = origin
+            response.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization"
+            response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Max-Age"]           = "3600"
+            return response
+
+    @app.after_request
+    def add_cors_headers(response):
+        origin = request.headers.get("Origin", "")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"]      = origin
+            response.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization"
+            response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+    # Also use Flask-CORS as backup
     CORS(
         app,
-        origins=cors_origins,
+        origins="*",
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )
 
-    # ── SocketIO with dynamic async mode ─────────────────────
+    # ── SocketIO ─────────────────────────────────────────────
     async_mode = _get_async_mode()
     print("[SocketIO] Using async mode: " + async_mode)
 
     socketio.init_app(
         app,
-        cors_allowed_origins=cors_origins,
+        cors_allowed_origins="*",
         async_mode=async_mode,
         logger=False,
         engineio_logger=False,
@@ -141,7 +148,7 @@ def create_app():
     except Exception as e:
         print("[Warning] Socket handlers not loaded: " + str(e))
 
-    # ── Health check ─────────────────────────────────────────
+    # ── Health ───────────────────────────────────────────────
     @app.route("/api/health")
     def health():
         return jsonify({
@@ -171,6 +178,7 @@ def create_app():
         from app.models.report    import Report
         db.create_all()
         _create_default_admin()
+        _create_demo_accounts()
 
     return app
 
@@ -193,3 +201,46 @@ def _create_default_admin():
             print("[InterviewAI] Backend ready.")
     except Exception as e:
         print("[InterviewAI] Note: " + str(e))
+
+
+def _create_demo_accounts():
+    """Create demo company and candidate accounts."""
+    from app.models.user      import User
+    from app.models.interview import Company
+    try:
+        # Demo company
+        comp_user = User.query.filter_by(email="company@demo.com").first()
+        if not comp_user:
+            comp_user = User(
+                email="company@demo.com",
+                full_name="Demo Company",
+                role="company"
+            )
+            comp_user.set_password("demo123")
+            db.session.add(comp_user)
+            db.session.flush()
+            comp = Company(
+                user_id=comp_user.id,
+                company_name="TechCorp Demo",
+                industry="Technology",
+                website="https://techcorp.demo"
+            )
+            db.session.add(comp)
+            print("[InterviewAI] Demo company created: company@demo.com / demo123")
+
+        # Demo candidate
+        cand_user = User.query.filter_by(email="candidate@demo.com").first()
+        if not cand_user:
+            cand_user = User(
+                email="candidate@demo.com",
+                full_name="Demo Candidate",
+                role="candidate"
+            )
+            cand_user.set_password("demo123")
+            db.session.add(cand_user)
+            print("[InterviewAI] Demo candidate created: candidate@demo.com / demo123")
+
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print("[InterviewAI] Demo accounts note: " + str(e))
